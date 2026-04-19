@@ -18,7 +18,6 @@ _RESET  = "\033[0m"
 _BOLD   = "\033[1m"
 _DIM    = "\033[2m"
 
-# Colour palette — one per severity
 _COL = {
     "debug":   "\033[96m",   # bright cyan
     "info":    "\033[97m",   # bright white

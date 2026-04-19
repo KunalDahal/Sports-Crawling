@@ -18,12 +18,6 @@ A Python crawler that finds illegal live sports streams. Given a match keyword, 
 ## Installation
 
 ```bash
-pip install spcrawler
-```
-
-Or install from source:
-
-```bash
 git clone https://github.com/KunalDahal/spcrawler.git
 cd spcrawler
 pip install -e .
