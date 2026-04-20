@@ -5,39 +5,12 @@ import re
 
 from .model import Model
 from . import prompts
-from ..log import get_logger
 
-log = get_logger("spcrawler.llm")
 
 
 class LLM:
     def __init__(self, model: Model) -> None:
         self._model = model
-
-    def pick_piracy_urls(
-        self,
-        search_results: list[dict],
-        keyword: str,
-        n: int = 10,
-    ) -> list[str]:
-        results_text = "\n".join(
-            f"- {r['url']}  |  {r.get('title', '')}" for r in search_results
-        )
-        payload = prompts.PICK_PIRACY_URLS_USER.format(
-            keyword=keyword,
-            n=len(search_results),
-            results=results_text,
-        )
-        raw = self._model.call(prompts.PICK_PIRACY_URLS_SYSTEM, payload).strip()
-        try:
-            clean = re.sub(r"```[a-z]*|```", "", raw).strip()
-            urls  = json.loads(clean)
-            if isinstance(urls, list):
-                return [u for u in urls if isinstance(u, str) and u.startswith("http")][:n]
-        except Exception:
-            pass
-        found = re.findall(r'https?://[^\s"\'<>,\]]+', raw)
-        return found[:n]
 
     def navigate(
         self,
@@ -51,7 +24,7 @@ class LLM:
     ) -> dict:
         links: list[dict] = page_data.get("links_found", [])
         links_lines = "\n".join(
-            f'  [{lnk.get("text", "").strip()[:50]}] → {lnk.get("url", "")}'
+            f'  [{lnk.get("text", "").strip()[:50]}] -> {lnk.get("url", "")}'
             for lnk in links[:30]
         ) or "  (none)"
 
@@ -80,8 +53,7 @@ class LLM:
             data.setdefault("signal", "none")
             return data
         except Exception as exc:
-            log.warning("navigate parse error: %s | raw: %s", exc, raw[:200])
-            return {"action": "stop", "next_urls": [], "reason": "parse error", "signal": "none"}
+            return {"action": "stop", "next_urls": [], "reason": f"parse error: {exc}", "signal": "none"}
 
     def score_page(self, page_data: dict, task_url: str) -> int:
         payload = (
@@ -96,14 +68,15 @@ class LLM:
             raw   = self._model.call(prompts.SCORE_SYSTEM, payload)
             match = re.search(r"\d+", raw)
             return max(0, min(100, int(match.group()))) if match else 0
-        except Exception as exc:
-            log.error("score_page failed: %s", exc)
+        except Exception:
             return 0
 
     def check_ads(self, page_data: dict) -> dict:
         snippet = (page_data.get("text_snippet") or "")[:600]
-        buttons = re.findall(r'\b(skip|close|continue|proceed|dismiss|allow|accept)\b',
-                             snippet, re.IGNORECASE)
+        buttons = re.findall(
+            r'\b(skip|close|continue|proceed|dismiss|allow|accept)\b',
+            snippet, re.IGNORECASE,
+        )
         payload = prompts.AD_CHECK_USER.format(
             title   = page_data.get("title", ""),
             snippet = snippet[:400],
@@ -118,8 +91,7 @@ class LLM:
             data.setdefault("wait_seconds", 0)
             data.setdefault("selector_hint", "")
             return data
-        except Exception as exc:
-            log.warning("check_ads parse error: %s", exc)
+        except Exception:
             return {"has_ad": False, "action": "none", "wait_seconds": 0, "selector_hint": ""}
 
     def verify_live(self, url: str, context: str = "") -> bool:
@@ -127,6 +99,5 @@ class LLM:
         try:
             raw = self._model.call(prompts.VERIFY_LIVE_SYSTEM, payload).strip().upper()
             return raw.startswith("LIVE") and "NOT" not in raw
-        except Exception as exc:
-            log.error("verify_live failed: %s", exc)
+        except Exception:
             return False

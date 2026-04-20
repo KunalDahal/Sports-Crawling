@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-# ── LLM ──────────────────────────────────────────────────────────────────────
 LLM_MODEL                   = "gemini-2.5-flash-lite"
 LLM_MAX_TOKENS              = 1024
 LLM_TEMPERATURE             = 0.2
@@ -9,7 +8,6 @@ MIN_DELAY_BETWEEN_LLM_CALLS = 8.0
 LLM_BACKOFF_BASE            = 20
 LLM_BACKOFF_MAX             = 120
 
-# ── Browser / Crawl ───────────────────────────────────────────────────────────
 MAX_DEPTH          = 6
 REQUEST_TIMEOUT_MS = 30_000
 CRAWL_TIMEOUT_SEC  = 45
@@ -20,11 +18,10 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# ── Search ────────────────────────────────────────────────────────────────────
-DDGS_TURNS          = 7   
-DDGS_PER_TURN       = 15  
-DDGS_TURN_DELAY     = 3.0 
-DDGS_SEARCH_QUERIES = [   
+DDGS_TURNS          = 7
+DDGS_PER_TURN       = 15
+DDGS_TURN_DELAY     = 3.0
+DDGS_SEARCH_QUERIES = [
     "{keyword} live stream free",
     "{keyword} watch online free",
     "{keyword} stream hd free",
@@ -34,23 +31,19 @@ DDGS_SEARCH_QUERIES = [
     "{keyword} live free",
 ]
 
-# ── Scoring ───────────────────────────────────────────────────────────────────
 PIRACY_SCORE_THRESHOLD = 60
 LLM_SCORE_TRIGGER      = 40
 
-# ── Dead-end pruning ──────────────────────────────────────────────────────────
 MAX_DEAD_PAGES_BEFORE_BACKTRACK = 4
 DEAD_END_SCORE                  = 15
 MAX_TOTAL_PAGES                 = 60
 
-# ── Stream detection ──────────────────────────────────────────────────────────
 TARGET_STREAM_EXTENSIONS = [".m3u8", ".mpd", ".ts"]
 TARGET_STREAM_SCHEMES    = ["rtmp://", "rtmpe://", "rtmps://", "rtmpt://",
                             "acestream://", "sopcast://"]
 TARGET_HLS_PATTERNS      = ["/hls/", "/live/", "/stream/", "/playlist",
                             "/chunklist", "/manifest"]
 
-# ── Domain / keyword lists ────────────────────────────────────────────────────
 PIRACY_KEYWORDS = [
     "free stream", "watch free", "live stream free", "stream online free",
     "full match", "hd stream", "720p", "1080p stream",

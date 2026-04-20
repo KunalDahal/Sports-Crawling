@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from ddgs import DDGS
 
-from ..log import get_logger, success as log_success
+from ..events import E, Event, EventBus, AsyncHandler
 from ..utils.config import Config
 from ..utils.db import Database
 from ..utils.constants import (
@@ -41,21 +41,21 @@ from ..client.llm import LLM
 from .proxy_manager import ProxyManager
 from .check import filter_live_stream_iframes, filter_live_stream_urls, is_live_stream_url
 
-log = get_logger("spcrawler.scraper")
-
 _NAV_RETRIES      = 2
 _NAV_RETRY_DELAY  = 3.0
 _BETWEEN_DFS_WAIT = 2.0
 
 
-def _multi_search(keyword: str) -> list[dict]:
-    seen: set[str]      = set()
-    all_results: list[dict] = []
+def _multi_search(
+    keyword: str,
+    on_turn: "((int, int, str, int, int) -> None) | None" = None,
+) -> list[dict]:
+    seen:        set[str]    = set()
+    all_results: list[dict]  = []
 
     for turn in range(DDGS_TURNS):
         query_template = DDGS_SEARCH_QUERIES[turn % len(DDGS_SEARCH_QUERIES)]
         query          = query_template.format(keyword=keyword)
-
         try:
             with DDGS() as ddgs:
                 raw = ddgs.text(query, max_results=DDGS_PER_TURN)
@@ -67,17 +67,15 @@ def _multi_search(keyword: str) -> list[dict]:
             for item in new:
                 seen.add(item["url"])
             all_results.extend(new)
-            log.info(
-                "DDGS turn %d/%d  query='%s'  got %d new  total=%d",
-                turn + 1, DDGS_TURNS, query, len(new), len(all_results),
-            )
+            if on_turn:
+                on_turn(turn + 1, DDGS_TURNS, query, len(new), len(all_results))
         except Exception as exc:
-            log.warning("DDGS turn %d failed: %s", turn + 1, exc)
+            if on_turn:
+                on_turn(turn + 1, DDGS_TURNS, query, 0, len(all_results))
 
         if turn < DDGS_TURNS - 1:
             time.sleep(DDGS_TURN_DELAY)
 
-    log.info("DDGS complete — %d unique links collected", len(all_results))
     return all_results
 
 
@@ -100,7 +98,7 @@ def _extract_page_data(result, url: str, keyword: str, parent_url: str | None) -
             if href.startswith("http"):
                 all_links.append({"url": href, "title": text.strip()})
 
-    seen_urls: set[str] = set()
+    seen_urls:   set[str]   = set()
     links_found: list[dict] = []
     for lnk in all_links:
         if lnk["url"] not in seen_urls:
@@ -152,7 +150,7 @@ def _extract_page_data(result, url: str, keyword: str, parent_url: str | None) -
 
 
 def _extract_prose(markdown: str) -> str:
-    lines = markdown.splitlines()
+    lines       = markdown.splitlines()
     prose_lines: list[str] = []
     for line in lines:
         stripped = line.strip()
@@ -226,36 +224,41 @@ def _stream_type(url: str) -> str:
 class Scraper:
     def __init__(
         self,
-        keyword:    str,
-        api_key:    str,
-        collection  = None,
-        proxy_url:  str = "",
-        mongo_uri:  str = "mongodb://localhost:27017",
-        db_name:    str = "spcrawler",
+        keyword:   str,
+        api_key:   str,
+        collection = None,
+        proxy_url: str = "",
+        mongo_uri: str = "mongodb://localhost:27017",
+        db_name:   str = "spcrawler",
     ) -> None:
         self.keyword      = keyword
         self._collection  = collection
-        self._visited: set[str] = set()
+        self._visited:    set[str] = set()
         self._total_pages = 0
+
+        self._bus = EventBus()
 
         cfg         = Config(api_key=api_key, db_name=db_name,
                              mongo_uri=mongo_uri, proxy_url=proxy_url)
-        self._model = get_model(cfg)
+        self._model = get_model(cfg, emit=self._emit_raw)
         self._llm   = LLM(self._model)
-        self._db    = Database(cfg)
+        self._db    = Database(cfg, bus=self._bus)
         self._proxy = ProxyManager(cfg)
 
         self._session_id = self._db.create_session(keyword)
         self._llm_sem    = asyncio.Semaphore(1)
 
-        log.info(
-            "Scraper ready  keyword='%s'  session=%s",
-            keyword, self._session_id,
-        )
-
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    def subscribe(self, handler: AsyncHandler) -> "Scraper":
+        self._bus.subscribe(handler)
+        return self
+
+    def on_event(self, handler: AsyncHandler) -> AsyncHandler:
+        self._bus.subscribe(handler)
+        return handler
 
     def get_streams(self) -> list[dict]:
         return self._db.get_streams(self._session_id)
@@ -264,40 +267,49 @@ class Scraper:
         return asyncio.run(self.run())
 
     async def run(self) -> list[str]:
+        await self._bus.start()
+        try:
+            return await self._run()
+        finally:
+            await self._bus.stop()
+
+    async def _run(self) -> list[str]:
         sid = self._session_id
         db  = self._db
 
-        db.log(sid, "info", f"Starting multi-turn DDGS search for: '{self.keyword}'")
-        all_results = await asyncio.to_thread(_multi_search, self.keyword)
+        self._emit(E.SESSION_CREATED, {"keyword": self.keyword, "session_id": sid})
+        self._emit(E.SEARCH_START, {"keyword": self.keyword, "turns": DDGS_TURNS})
 
-        if not all_results:
-            db.log(sid, "error", "DDGS returned 0 results — aborting.")
-            db.finish_session(sid)
-            return []
-
-        db.log(sid, "info", f"LLM ranking {len(all_results)} links for top piracy candidates...")
-        candidates = await self._llm_call(
-            self._llm.pick_piracy_urls, all_results, self.keyword, 10
+        all_results = await asyncio.to_thread(
+            _multi_search, self.keyword, self._make_ddgs_hook()
         )
 
-        if not candidates:
-            db.log(sid, "info", "LLM found no suspicious URLs — done.")
+        self._emit(E.SEARCH_COMPLETE, {
+            "keyword":       self.keyword,
+            "total_results": len(all_results),
+        })
+
+        if not all_results:
             db.finish_session(sid)
+            self._emit(E.SESSION_FINISHED, {
+                "keyword": self.keyword, "streams_found": 0,
+                "pages_crawled": 0, "streams": [],
+            })
             return []
 
-        log.info("LLM selected %d candidate(s):", len(candidates))
-        for i, u in enumerate(candidates, 1):
-            log.info("  %2d. %s", i, u)
+        candidates = [r["url"] for r in all_results]
+
+        self._emit(E.SEARCH_CANDIDATES, {
+            "total": len(candidates),
+            "candidates": candidates,
+        })
 
         tree_map: dict[str, str] = db.register_parent_trees(sid, candidates)
 
         for idx, start_url in enumerate(candidates, 1):
             if self._total_pages >= MAX_TOTAL_PAGES:
-                db.log(sid, "info", f"Page cap ({MAX_TOTAL_PAGES}) reached — stopping.")
                 break
             col_name = tree_map[start_url]
-            log.info("Candidate %d/%d  col=%s  %s", idx, len(candidates), col_name, start_url)
-            db.log(sid, "info", f"Crawling candidate {idx}/{len(candidates)}: {start_url}")
             await self._dfs(start_url, col_name)
             if idx < len(candidates):
                 await asyncio.sleep(_BETWEEN_DFS_WAIT)
@@ -305,32 +317,22 @@ class Scraper:
         streams = self.get_streams()
         db.finish_session(sid, streams_found=len(streams))
 
-        if streams:
-            log_success(log, "Stream(s) found for '%s'", self.keyword)
-            for s in streams:
-                log_success(log, "   [%s]  %s", s["stream_type"], s["stream_url"])
-        else:
-            log.info("No live streams found for '%s'.", self.keyword)
+        self._emit(E.SESSION_FINISHED, {
+            "keyword":       self.keyword,
+            "streams_found": len(streams),
+            "pages_crawled": self._total_pages,
+            "streams":       [s["stream_url"] for s in streams],
+        })
 
         return [s["stream_url"] for s in streams]
 
-    def _make_root_node(self, all_results: list[dict]) -> dict:
-        links = [{"url": r["url"], "title": r.get("title", "")} for r in all_results]
-        return {
-            "keyword":      self.keyword,
-            "url":          "",
-            "parent_url":   None,
-            "title":        f"[ROOT] {self.keyword}",
-            "text_snippet": "",
-            "links_found":  links,
-            "iframes":      [],
-            "stream_urls":  [],
-            "cdn_headers":  {},
-            "score":        0,
-            "crawled_at":   datetime.now(timezone.utc).isoformat(),
-        }
-
     async def _dfs(self, start_url: str, tree_col_name: str) -> None:
+        self._emit(E.CRAWL_TREE_START, {
+            "start_url":    start_url,
+            "tree_col":     tree_col_name,
+            "pages_so_far": self._total_pages,
+        })
+
         proxy = self._proxy.get()
         browser_cfg = BrowserConfig(
             headless            = HEADLESS_BROWSER,
@@ -359,7 +361,6 @@ class Scraper:
         async with AsyncWebCrawler(config=browser_cfg) as crawler:
             while stack:
                 if self._total_pages >= MAX_TOTAL_PAGES:
-                    log.info("Global page cap reached — stopping DFS.")
                     break
 
                 url, depth, dead_streak, parent_url = stack.pop()
@@ -369,16 +370,24 @@ class Scraper:
                 if depth > MAX_DEPTH:
                     continue
                 if dead_streak >= MAX_DEAD_PAGES_BEFORE_BACKTRACK:
-                    log.info("Dead-streak=%d — pruning branch: %s", dead_streak, url)
                     continue
 
                 self._visited.add(url)
                 self._total_pages += 1
-                log.info("Crawling  depth=%d  dead=%d  %s", depth, dead_streak, url)
+
+                self._emit(E.CRAWL_PAGE_START, {
+                    "url":         url,
+                    "depth":       depth,
+                    "dead_streak": dead_streak,
+                    "parent_url":  parent_url,
+                    "tree_col":    tree_col_name,
+                })
 
                 page_data = await self._crawl_page(crawler, run_cfg, url, parent_url)
                 if page_data is None:
-                    log.warning("Crawl failed — skipping: %s", url)
+                    self._emit(E.CRAWL_PAGE_FAIL, {
+                        "url": url, "depth": depth, "tree_col": tree_col_name,
+                    })
                     continue
 
                 page_data["depth"] = depth
@@ -386,12 +395,22 @@ class Scraper:
                 await self._handle_ads(crawler, run_cfg, url, page_data)
 
                 rule  = _rule_score(page_data)
-                score = await self._score_page_async(page_data, rule)
+                score = await self._score_page_async(page_data, rule, tree_col_name)
                 page_data["score"] = score
+
                 self._upsert_node(page_data, tree_col_name)
 
-                _flag = "FLAGGED" if score >= PIRACY_SCORE_THRESHOLD else "clean"
-                log.info("%s  score=%d  %s", _flag, score, url)
+                self._emit(E.CRAWL_PAGE_DONE, {
+                    "url":         url,
+                    "depth":       depth,
+                    "score":       score,
+                    "flagged":     score >= PIRACY_SCORE_THRESHOLD,
+                    "title":       page_data.get("title", ""),
+                    "stream_urls": page_data.get("stream_urls", []),
+                    "iframes":     page_data.get("iframes", []),
+                    "links_found": len(page_data.get("links_found", [])),
+                    "tree_col":    tree_col_name,
+                })
 
                 found_stream = await self._collect_streams(page_data, score)
 
@@ -409,10 +428,15 @@ class Scraper:
                         page_data, url, depth, self._visited,
                         self.keyword, rule, dead_streak,
                     )
-                    log.info(
-                        "Nav action=%s signal=%s reason=%s",
-                        nav.get("action"), nav.get("signal"), nav.get("reason"),
-                    )
+                    self._emit(E.LLM_NAVIGATE, {
+                        "url":       url,
+                        "depth":     depth,
+                        "action":    nav.get("action"),
+                        "signal":    nav.get("signal"),
+                        "reason":    nav.get("reason"),
+                        "next_urls": nav.get("next_urls", []),
+                        "tree_col":  tree_col_name,
+                    })
 
                     if nav.get("action") == "continue":
                         next_urls = [
@@ -421,10 +445,12 @@ class Scraper:
                         ]
                         for u in reversed(next_urls):
                             stack.append((u, depth + 1, child_dead, url))
-                        if next_urls:
-                            log.info("Queued %d URL(s): %s", len(next_urls), next_urls)
 
-        log.info("DFS done for: %s", start_url)
+        self._emit(E.CRAWL_TREE_DONE, {
+            "start_url":    start_url,
+            "tree_col":     tree_col_name,
+            "pages_crawled": self._total_pages,
+        })
 
     async def _handle_ads(
         self,
@@ -438,6 +464,14 @@ class Scraper:
         except Exception:
             return
 
+        self._emit(E.LLM_AD_CHECK, {
+            "url":           url,
+            "has_ad":        ad_info.get("has_ad", False),
+            "action":        ad_info.get("action", "none"),
+            "wait_seconds":  ad_info.get("wait_seconds", 0),
+            "selector_hint": ad_info.get("selector_hint", ""),
+        })
+
         if not ad_info.get("has_ad"):
             return
 
@@ -445,8 +479,10 @@ class Scraper:
         selector_hint = ad_info.get("selector_hint", "")
         action        = ad_info.get("action", "none")
 
-        log.info("Ad detected — action=%s  wait=%ds  button='%s'",
-                 action, wait_sec, selector_hint)
+        self._emit(E.CRAWL_AD_DETECTED, {
+            "url": url, "action": action,
+            "wait_seconds": wait_sec, "selector_hint": selector_hint,
+        })
 
         if wait_sec > 0:
             await asyncio.sleep(wait_sec + 1)
@@ -472,13 +508,17 @@ class Scraper:
                     crawler.arun(url=url, config=skip_cfg),
                     timeout=CRAWL_TIMEOUT_SEC,
                 )
-                log.info("Skip button clicked: '%s'", selector_hint)
+                self._emit(E.CRAWL_AD_HANDLED, {
+                    "url": url, "selector_hint": selector_hint, "success": True,
+                })
             except Exception as exc:
-                log.warning("Skip click failed: %s", exc)
+                self._emit(E.CRAWL_AD_HANDLED, {
+                    "url": url, "selector_hint": selector_hint,
+                    "success": False, "error": str(exc),
+                })
 
     async def _collect_streams(self, page_data: dict, score: int) -> bool:
         recorded = False
-        sid      = self._session_id
         source   = page_data["url"]
         context  = page_data.get("text_snippet", "")
 
@@ -491,13 +531,24 @@ class Scraper:
 
         for stream_url in dict.fromkeys(candidates):
             is_live = await self._llm_call(self._llm.verify_live, stream_url, context)
+
+            self._emit(E.LLM_VERIFY_LIVE, {
+                "stream_url": stream_url,
+                "source_url": source,
+                "is_live":    is_live,
+            })
+
             if not is_live:
-                log.info("Stream rejected (not live): %s", stream_url)
+                self._emit(E.STREAM_REJECTED, {
+                    "stream_url": stream_url,
+                    "source_url": source,
+                    "reason":     "llm_rejected",
+                })
                 continue
 
             stype  = _stream_type(stream_url)
             doc_id = self._db.record_stream(
-                session_id  = sid,
+                session_id  = self._session_id,
                 stream_url  = stream_url,
                 source_url  = source,
                 keyword     = self.keyword,
@@ -505,7 +556,13 @@ class Scraper:
                 score       = score,
             )
             if doc_id:
-                log_success(log, "Stream recorded  [%s]  %s", stype, stream_url)
+                self._emit(E.STREAM_FOUND, {
+                    "stream_url":  stream_url,
+                    "source_url":  source,
+                    "stream_type": stype,
+                    "score":       score,
+                    "doc_id":      doc_id,
+                })
                 recorded = True
 
         return recorded
@@ -521,13 +578,22 @@ class Scraper:
                 upsert=True,
             )
         except Exception as exc:
-            log.warning("Failed writing to caller collection: %s", exc)
+            self._emit(E.ERROR, {
+                "context": "upsert_node_caller_collection",
+                "error":   str(exc),
+            })
 
-    async def _score_page_async(self, page_data: dict, rule: int) -> int:
+    async def _score_page_async(self, page_data: dict, rule: int, tree_col: str) -> int:
         if rule >= LLM_SCORE_TRIGGER:
             llm_s    = await self._llm_call(self._llm.score_page, page_data, page_data["url"])
             combined = min(100, (rule + llm_s) // 2)
-            log.info("Score  rule=%d  llm=%d  combined=%d", rule, llm_s, combined)
+            self._emit(E.LLM_SCORE, {
+                "url":      page_data["url"],
+                "rule":     rule,
+                "llm":      llm_s,
+                "combined": combined,
+                "tree_col": tree_col,
+            })
             return combined
         return rule
 
@@ -551,29 +617,54 @@ class Scraper:
                     timeout=CRAWL_TIMEOUT_SEC,
                 )
             except asyncio.TimeoutError:
-                log.warning("Timeout crawling: %s", url)
+                self._emit(E.ERROR, {"context": "crawl_timeout", "url": url})
                 return None
             except Exception as exc:
                 err = str(exc)
                 if "navigating" in err.lower() and attempt <= _NAV_RETRIES:
-                    log.warning("Still navigating (attempt %d/%d) — retrying: %s",
-                                attempt, _NAV_RETRIES + 1, url)
                     await asyncio.sleep(_NAV_RETRY_DELAY)
                     continue
-                log.warning("Navigation error on %s: %s", url, exc)
+                self._emit(E.ERROR, {"context": "crawl_exception", "url": url, "error": err})
                 return None
 
             if not result.success:
                 err = result.error_message or ""
                 if "navigating" in err.lower() and attempt <= _NAV_RETRIES:
-                    log.warning("Crawl nav error (attempt %d/%d) — retrying: %s",
-                                attempt, _NAV_RETRIES + 1, url)
                     await asyncio.sleep(_NAV_RETRY_DELAY)
                     continue
-                log.warning("Crawl failed: %s", err)
+                self._emit(E.ERROR, {"context": "crawl_failed", "url": url, "error": err})
                 return None
 
             return _extract_page_data(result, url, self.keyword, parent_url)
 
-        log.warning("All retries failed for: %s", url)
+        self._emit(E.ERROR, {"context": "crawl_all_retries_failed", "url": url})
         return None
+
+    def _emit(self, event_type: str, data: dict) -> None:
+        self._bus.emit(Event(
+            type       = event_type,
+            session_id = self._session_id,
+            data       = data,
+        ))
+
+    def _emit_raw(self, event_type: str, data: dict) -> None:
+        self._emit(event_type, data)
+
+    def _make_ddgs_hook(self):
+        sid = self._session_id
+        bus = self._bus
+
+        def on_turn(turn: int, total: int, query: str, new_count: int, total_count: int) -> None:
+            bus.emit(Event(
+                type       = E.SEARCH_TURN_DONE,
+                session_id = sid,
+                data       = {
+                    "turn":        turn,
+                    "total_turns": total,
+                    "query":       query,
+                    "new_results": new_count,
+                    "total":       total_count,
+                },
+            ))
+
+        return on_turn

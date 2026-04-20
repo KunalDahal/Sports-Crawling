@@ -3,10 +3,6 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-from ..log import get_logger
-
-log = get_logger("spcrawler.check")
-
 _LIVE_EXTENSIONS = {".m3u8", ".mpd"}
 
 _LIVE_PATH_PATTERNS = [
@@ -18,7 +14,7 @@ _LIVE_PATH_PATTERNS = [
     r"[?&]live=",
     r"/manifest",
     r"/chunklist",
-    r"\.ts($|[?#])",        
+    r"\.ts($|[?#])",
 ]
 
 _LIVE_DOMAIN_KEYWORDS = [
@@ -29,17 +25,9 @@ _LIVE_DOMAIN_KEYWORDS = [
 ]
 
 _LIVE_IFRAME_SRC_PATTERNS = [
-    r"stream",
-    r"live",
-    r"embed",
-    r"player",
-    r"watch",
-    r"tv/",
-    r"/ch/",
-    r"channel",
+    r"stream", r"live", r"embed", r"player", r"watch", r"tv/", r"/ch/", r"channel",
 ]
 
-# ── Definite NON-stream indicators (image / tracker / ad / static) ────────────
 _IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
     ".ico", ".bmp", ".tiff",
@@ -58,19 +46,13 @@ _AD_TRACKER_DOMAINS = [
 ]
 
 _AD_PATH_PATTERNS = [
-    r"/ads?/",
-    r"/track(er|ing)?/",
-    r"/pixel",
-    r"/beacon",
-    r"/analytics",
-    r"/stat(s|istics)?",
-    r"\.gif\?",
+    r"/ads?/", r"/track(er|ing)?/", r"/pixel", r"/beacon",
+    r"/analytics", r"/stat(s|istics)?", r"\.gif\?",
 ]
 
 _SHORT_VIDEO_DOMAINS = [
     "youtube.com", "youtu.be", "vimeo.com", "dailymotion.com",
-    "twitch.tv",                    
-    "tiktok.com", "instagram.com",
+    "twitch.tv", "tiktok.com", "instagram.com",
 ]
 
 
@@ -91,16 +73,13 @@ def is_live_stream_url(url: str) -> bool:
     parsed    = urlparse(url_lower)
     if parsed.scheme in ("data", "blob", "javascript", "mailto"):
         return False
-    if parsed.scheme in ("rtmp", "rtmpe", "rtmps", "rtmpt", "rtmpte",
-                         "acestream", "sopcast"):
-        log.debug("live-stream scheme: %s", url[:80])
+    if parsed.scheme in ("rtmp", "rtmpe", "rtmps", "rtmpt", "rtmpte", "acestream", "sopcast"):
         return True
 
     ext = _path_ext(url)
     if ext in _IMAGE_EXTENSIONS:
         return False
     if ext in _LIVE_EXTENSIONS:
-        log.debug("live-stream ext %s: %s", ext, url[:80])
         return True
     if ext in _STATIC_VIDEO_EXTENSIONS:
         return False
@@ -114,11 +93,9 @@ def is_live_stream_url(url: str) -> bool:
             return False
     for pat in _LIVE_PATH_PATTERNS:
         if re.search(pat, url_lower):
-            log.debug("live-stream path pattern '%s': %s", pat, url[:80])
             return True
     for kw in _LIVE_DOMAIN_KEYWORDS:
         if kw in domain:
-            log.debug("live-stream domain keyword '%s': %s", kw, url[:80])
             return True
 
     return False
@@ -145,7 +122,6 @@ def is_live_stream_iframe(src: str) -> bool:
     path_and_query = parsed.path + "?" + (parsed.query or "")
     for pat in _LIVE_IFRAME_SRC_PATTERNS:
         if re.search(pat, path_and_query):
-            log.debug("live-stream iframe pattern '%s': %s", pat, src[:80])
             return True
     for kw in _LIVE_DOMAIN_KEYWORDS:
         if kw in domain:
@@ -155,15 +131,11 @@ def is_live_stream_iframe(src: str) -> bool:
 
 
 def filter_live_stream_iframes(iframes: list[str]) -> list[str]:
-    result = [src for src in iframes if is_live_stream_iframe(src)]
-    log.debug("iframe filter: %d/%d passed", len(result), len(iframes))
-    return result
+    return [src for src in iframes if is_live_stream_iframe(src)]
 
 
 def filter_live_stream_urls(urls: list[str]) -> list[str]:
-    result = [u for u in urls if is_live_stream_url(u)]
-    log.debug("url filter: %d/%d passed", len(result), len(urls))
-    return result
+    return [u for u in urls if is_live_stream_url(u)]
 
 
 def extract_best_live_stream(page_data: dict) -> str | None:
@@ -179,5 +151,4 @@ def extract_best_live_stream(page_data: dict) -> str | None:
     for url in candidates:
         if url.lower().startswith("rtmp"):
             return url
-
     return candidates[0]
