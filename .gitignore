@@ -8,3 +8,6 @@ screenshots/
 *.log
 .vscode/
 docs/
+node_modules/
+frontend/dist/
+backend/server.exe
