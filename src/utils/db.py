@@ -15,10 +15,6 @@ from .constants import PIRACY_SCORE_THRESHOLD
 # ---------------------------------------------------------------------------
 
 def _tree_col_name(session_id: str, index: int) -> str:
-    """
-    Deterministic collection name for one parent-URL tree.
-    Format:  tree_<session_id>_<zero-padded index>
-    """
     return f"tree_{session_id}_{index:02d}"
 
 
@@ -60,7 +56,6 @@ class Database:
             "streams_found": 0,
             "pages_crawled": 0,
             "flagged_count": 0,
-            # Populated by register_parent_trees once LLM picks are ready.
             "parent_trees":  [],
         }
         result = self._db["sessions"].insert_one(doc)
@@ -73,18 +68,6 @@ class Database:
         session_id:  str,
         parent_urls: list[str],
     ) -> dict[str, str]:
-        """
-        Called once per session, right after the LLM picks the N candidate
-        (parent) URLs from the DDGS results.
-
-        For every parent URL:
-          • a dedicated MongoDB collection is created
-          • a seed document (depth=0, status="pending") is inserted so the
-            parent URL is always visible in its own tree even before crawling
-
-        Returns a mapping  {parent_url: collection_name}  that the scraper
-        uses to route upsert_node calls to the correct collection.
-        """
         from bson import ObjectId
 
         trees:   list[dict]      = []
@@ -99,14 +82,13 @@ class Database:
             })
             mapping[url] = col_name
 
-            # Seed the parent node so it exists at depth=0 immediately.
             self._indexed_col(col_name).replace_one(
                 {"url": url},
                 {
                     "url":          url,
-                    "depth":        0,          # ← root of this sub-tree
+                    "depth":        0,         
                     "parent_url":   None,
-                    "keyword":      "",         # filled in when crawled
+                    "keyword":      "",        
                     "title":        "",
                     "text_snippet": "",
                     "links_found":  [],
@@ -114,7 +96,7 @@ class Database:
                     "stream_urls":  [],
                     "cdn_headers":  {},
                     "score":        0,
-                    "crawled_at":   None,       # None = not yet crawled
+                    "crawled_at":   None,       
                     "status":       "pending",
                 },
                 upsert=True,
@@ -173,7 +155,6 @@ class Database:
         return (doc or {}).get("parent_trees", [])
 
     def get_tree_col_name(self, session_id: str, parent_url: str) -> str | None:
-        """Return the collection name for a specific parent URL, or None."""
         for tree in self._get_tree_meta(session_id):
             if tree["parent_url"] == parent_url:
                 return tree["collection"]
@@ -191,16 +172,6 @@ class Database:
         node:          dict,
         tree_col_name: str,
     ) -> None:
-        """
-        Write (or overwrite) a crawled node into its parent-URL tree
-        collection.
-
-        ``node`` must contain at least:
-            url, depth, parent_url, score, title, crawled_at
-
-        ``tree_col_name`` must come from ``register_parent_trees`` or
-        ``get_tree_col_name``.
-        """
         node.setdefault("status", "crawled")
         self._indexed_col(tree_col_name).replace_one(
             {"url": node["url"]},
@@ -212,15 +183,10 @@ class Database:
     # ── Session-level aggregate stats ──────────────────────────────────────
 
     def _refresh_session_stats(self, session_id: str) -> None:
-        """
-        Recompute pages_crawled and flagged_count by scanning every tree
-        collection and push the totals back into the session document.
-        """
         pages_crawled = 0
         flagged_count = 0
         for col_name in self.get_all_tree_col_names(session_id):
             col = self._col(col_name)
-            # Only count nodes that have actually been crawled.
             pages_crawled += col.count_documents({"crawled_at": {"$ne": None}})
             flagged_count += col.count_documents(
                 {"score": {"$gte": PIRACY_SCORE_THRESHOLD}}
@@ -234,14 +200,12 @@ class Database:
     # ── Cross-tree page queries ────────────────────────────────────────────
 
     def get_all_pages(self, session_id: str) -> list[dict]:
-        """Merge and return pages from every tree in this session."""
         result: list[dict] = []
         for col_name in self.get_all_tree_col_names(session_id):
             result.extend(self._col(col_name).find({}, {"_id": 0}))
         return result
 
     def get_flagged_pages(self, session_id: str) -> list[dict]:
-        """All pages whose score is at or above PIRACY_SCORE_THRESHOLD, sorted."""
         pages: list[dict] = []
         for col_name in self.get_all_tree_col_names(session_id):
             pages.extend(
@@ -272,10 +236,6 @@ class Database:
         *,
         sort_by_depth: bool = True,
     ) -> list[dict]:
-        """
-        Return every page stored in one specific parent-URL tree.
-        Sorted by depth ascending by default (breadth-first view).
-        """
         sort_field = "depth" if sort_by_depth else "crawled_at"
         return list(
             self._col(tree_col_name)
@@ -284,11 +244,6 @@ class Database:
         )
 
     def get_tree_summary(self, session_id: str) -> list[dict]:
-        """
-        Return a high-level summary for each registered tree:
-            parent_url, collection, total_pages, flagged, max_depth, streams
-        Useful for dashboards / debugging.
-        """
         summaries = []
         for tree in self._get_tree_meta(session_id):
             col       = self._col(tree["collection"])

@@ -289,8 +289,6 @@ class Scraper:
         for i, u in enumerate(candidates, 1):
             log.info("  %2d. %s", i, u)
 
-        # One dedicated MongoDB collection per parent/candidate URL.
-        # register_parent_trees seeds each collection with a depth=0 document.
         tree_map: dict[str, str] = db.register_parent_trees(sid, candidates)
 
         for idx, start_url in enumerate(candidates, 1):
@@ -383,7 +381,6 @@ class Scraper:
                     log.warning("Crawl failed — skipping: %s", url)
                     continue
 
-                # Stamp depth so every stored document carries it.
                 page_data["depth"] = depth
 
                 await self._handle_ads(crawler, run_cfg, url, page_data)
