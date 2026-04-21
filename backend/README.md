@@ -23,7 +23,7 @@ Request body:
 
 ```json
 {
-  "keyword": "NewZealand Vs Bangladesh odi",
+  "keyword": "MI Vs GT",
   "api_key": "gemini-key",
   "db_name": "sports_scraper",
   "mongo_uri": "mongodb://localhost:27017",
