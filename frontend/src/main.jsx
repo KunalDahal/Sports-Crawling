@@ -507,7 +507,6 @@ function NodeDetails({ node }) {
     );
   }
 
-  // Generic fallback
   return (
     <div className="node-details">
       <p className="eyebrow">{eventLabels[type] || type}</p>
@@ -524,8 +523,6 @@ function NodeDetails({ node }) {
     </div>
   );
 }
-
-// ─── Tree layout (top-down, leaves spread left→right) ─────────────────────────
 
 const NODE_W = 180;
 const NODE_H = 80;
@@ -574,7 +571,6 @@ function buildTree(events) {
     if (parent) parent.children = [...set];
   }
 
-  // Pass 1: number the leaves left→right in DFS order
   let leafCounter = 0;
   const leafCol   = new Map();
 
@@ -590,7 +586,6 @@ function buildTree(events) {
   }
   for (const rid of roots) assignLeaves(rid);
 
-  // Pass 2: x = centre of leaf columns under this node; y = depth * row height
   const positioned = new Map();
   let maxX = 0;
   let maxY = 0;
@@ -672,7 +667,6 @@ function parentId(ev) {
   const d = ev.data || {};
   if (d.parent_url) return `page:${d.parent_url}`;
   if (d.source_url) return `page:${d.source_url}`;
-  // Attach page events to their tree root
   if (
     (ev.type === "crawl.page_start" ||
      ev.type === "crawl.page_done"  ||
