@@ -19,7 +19,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -76,8 +77,6 @@ h4 {
 .health,
 .side,
 .inspector,
-.stat,
-.current-url,
 .canvas-shell {
   backdrop-filter: blur(12px);
   background: rgba(255, 255, 255, 0.78);
@@ -157,8 +156,20 @@ input {
   min-width: 0;
   padding: 11px 12px;
 }
+select {
+  background: rgba(247, 250, 253, 0.94);
+  border: 1px solid rgba(143, 159, 178, 0.4);
+  border-radius: 12px;
+  color: #172026;
+  min-width: 0;
+  padding: 11px 12px;
+}
 
 input:focus {
+  border-color: #1e63b1;
+  outline: 3px solid rgba(30, 99, 177, 0.14);
+}
+select:focus {
   border-color: #1e63b1;
   outline: 3px solid rgba(30, 99, 177, 0.14);
 }
@@ -207,6 +218,9 @@ input:focus {
 }
 
 .sessions {
+  margin-top: 18px;
+}
+.sessions-simple {
   margin-top: 18px;
 }
 
@@ -275,43 +289,7 @@ small,
 
 .mainstage {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
-}
-
-.stats {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(6, minmax(108px, 1fr)) repeat(2, minmax(220px, 1.6fr));
-  margin-bottom: 12px;
-}
-
-.stat,
-.current-url {
-  border-radius: 18px;
-  min-width: 0;
-  padding: 14px;
-}
-
-.stat strong {
-  display: block;
-  font-size: 1.5rem;
-  line-height: 1;
-}
-
-.stat span,
-.current-url span {
-  color: #56616c;
-  display: block;
-  font-size: 0.78rem;
-  font-weight: 800;
-  margin-top: 7px;
-}
-
-.current-url strong {
-  display: block;
-  font-size: 0.9rem;
-  overflow-wrap: anywhere;
 }
 
 .canvas-shell {
@@ -488,104 +466,6 @@ small,
   fill: #169a5d;
 }
 
-.canvas-overlay {
-  backdrop-filter: blur(10px);
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(128, 147, 168, 0.24);
-  border-radius: 16px;
-  box-shadow: 0 12px 30px rgba(25, 49, 76, 0.08);
-  position: absolute;
-  z-index: 2;
-}
-
-.canvas-right-stack {
-  display: grid;
-  gap: 12px;
-  position: absolute;
-  right: 16px;
-  top: 16px;
-  width: min(320px, calc(100% - 32px));
-  z-index: 2;
-}
-
-.canvas-decision {
-  left: 16px;
-  max-width: 360px;
-  padding: 14px 16px;
-  top: 16px;
-}
-
-.overlay-label {
-  color: #56616c;
-  display: block;
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  margin-bottom: 6px;
-  text-transform: uppercase;
-}
-
-.canvas-decision strong {
-  display: block;
-  font-size: 1rem;
-  margin-bottom: 8px;
-}
-
-.overlay-copy {
-  color: #44515e;
-  font-size: 0.82rem;
-  margin: 0 0 4px;
-}
-
-.canvas-latest {
-  display: flex;
-  flex-direction: column;
-  max-height: 320px;
-  padding: 14px;
-  position: static;
-  width: 100%;
-}
-
-.canvas-llm {
-  max-width: none;
-  padding: 14px;
-  position: static;
-  width: 100%;
-}
-
-.event-stack {
-  display: grid;
-  flex: 1;
-  gap: 8px;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.event-chip {
-  background: rgba(249, 251, 254, 0.96);
-  border: 1px solid rgba(142, 158, 177, 0.24);
-  border-radius: 12px;
-  color: #172026;
-  display: grid;
-  gap: 3px;
-  padding: 10px;
-  text-align: left;
-  width: 100%;
-}
-
-.event-chip.active,
-.event-chip:hover {
-  border-color: rgba(30, 99, 177, 0.48);
-}
-
-.event-chip span {
-  font-size: 0.82rem;
-  font-weight: 800;
-}
-
-.event-chip small {
-  font-size: 0.74rem;
-}
 
 .empty {
   align-items: center;
@@ -618,6 +498,10 @@ small,
 .inspect-actions {
   display: flex;
   gap: 8px;
+}
+
+.inspect-actions-inline {
+  margin-bottom: 12px;
 }
 
 .ghost {
@@ -748,6 +632,16 @@ dd {
 .detail-section {
   margin-bottom: 14px;
 }
+.mapped-events {
+  border-top: 1px solid rgba(141, 157, 176, 0.22);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.mapped-list dt {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 0.74rem;
+}
 
 .url-list {
   display: grid;
@@ -847,16 +741,8 @@ dd {
     position: static;
   }
 
-  .stats {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
-  }
-
   .canvas-shell {
     height: clamp(500px, calc(100vh - 160px), 780px);
-  }
-
-  .current-url {
-    grid-column: 1 / -1;
   }
 }
 
@@ -881,19 +767,6 @@ dd {
 
   .canvas {
     min-height: 460px;
-  }
-
-  .canvas-decision,
-  .canvas-latest,
-  .canvas-llm {
-    max-width: none;
-    position: static;
-    width: auto;
-  }
-
-  .canvas-right-stack {
-    position: static;
-    width: auto;
   }
 
   .canvas {

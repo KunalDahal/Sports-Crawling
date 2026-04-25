@@ -66,13 +66,6 @@ function App() {
   const [selectedId, setSelectedId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
-  useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
   useEffect(() => {
     refreshSessions();
     const timer = setInterval(refreshSessions, 3000);
@@ -109,6 +102,8 @@ function App() {
       setSessions(data);
       if (!activeId && data.length) {
         setActiveId(data[0].id);
+      } else if (activeId && !data.some((session) => session.id === activeId)) {
+        setActiveId(data[0]?.id || "");
       }
       return data;
     } catch {
@@ -170,7 +165,7 @@ function App() {
   }
 
   const active = sessions.find((session) => session.id === activeId);
-  const llmSummary = useMemo(() => summarizeLLM(events, nowMs), [events, nowMs]);
+  const actionSession = active || sessions[0] || null;
   const graph = useMemo(() => buildGraph(events, active), [events, active]);
   const selected = selectedId ? graph.selectionMap.get(selectedId) : null;
 
@@ -201,7 +196,7 @@ function App() {
         <aside className="side">
           <form className="launcher" onSubmit={startSession}>
             <label>
-              Keyword
+              Keywords
               <input
                 value={form.keyword}
                 onChange={(e) => setForm({ ...form, keyword: e.target.value })}
@@ -210,7 +205,7 @@ function App() {
               />
             </label>
             <label>
-              Gemini API key
+              API key
               <input
                 type="password"
                 value={form.api_key}
@@ -223,17 +218,18 @@ function App() {
               <input
                 value={form.db_name}
                 onChange={(e) => setForm({ ...form, db_name: e.target.value })}
+                placeholder="sports_scraper"
               />
             </label>
             <label>
-              Mongo URI
+              MongoDB URI
               <input
                 value={form.mongo_uri}
                 onChange={(e) => setForm({ ...form, mongo_uri: e.target.value })}
               />
             </label>
             <label>
-              Proxy URL
+              Proxy
               <input
                 value={form.proxy_url}
                 onChange={(e) => setForm({ ...form, proxy_url: e.target.value })}
@@ -245,37 +241,34 @@ function App() {
 
           {error && <div className="error">{error}</div>}
 
-          <div className="sessions">
+          <div className="sessions-simple">
             <div className="section-head">
-              <h2>Sessions</h2>
+              <h2>Active session</h2>
               <span className="tiny-pill">{sessions.length}</span>
             </div>
-            {sessions.length === 0 && <p className="muted">No sessions yet.</p>}
-            {sessions.map((session) => (
-              <button
-                key={session.id}
-                className={`session ${session.id === activeId ? "active" : ""}`}
-                onClick={() => setActiveId(session.id)}
-                type="button"
-              >
-                <span>{session.keyword}</span>
-                <small>{session.status}</small>
-                <div className="session-metrics">
-                  <b>{session.pages_crawled || 0}</b>
-                  <span>pages</span>
-                  <b>{session.streams_found || 0}</b>
-                  <span>streams</span>
-                </div>
-              </button>
-            ))}
+            {sessions.length === 0 ? (
+              <p className="muted">No sessions yet.</p>
+            ) : (
+              <label>
+                Session
+                <select
+                  value={activeId}
+                  onChange={(e) => setActiveId(e.target.value)}
+                >
+                  {sessions.map((session) => (
+                    <option key={session.id} value={session.id}>
+                      {session.keyword || "Session"} | {session.status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
         </aside>
 
         <section className="mainstage">
-          <Stats active={active} graph={graph} llmSummary={llmSummary} />
           <TreeCanvas
             graph={graph}
-            llmSummary={llmSummary}
             selectedId={selectedId}
             onSelect={setSelectedId}
             onClear={() => setSelectedId(graph.rootId || "")}
@@ -288,25 +281,26 @@ function App() {
               <p className="eyebrow">Node details</p>
               <h2>Inspector</h2>
             </div>
-            {active && (
-              <div className="inspect-actions">
-                {["running", "starting"].includes(active.status) && (
-                  <button className="ghost" onClick={() => stopSession(active.id)} type="button">
+          </div>
+          <div className="inspector-scroll">
+            {actionSession && (
+              <div className="inspect-actions inspect-actions-inline">
+                {["running", "starting"].includes(actionSession.status) && (
+                  <button className="ghost" onClick={() => stopSession(actionSession.id)} type="button">
                     Stop
                   </button>
                 )}
-                <button className="danger" onClick={() => removeSession(active.id)} type="button">
+                <button className="danger" onClick={() => removeSession(actionSession.id)} type="button">
                   Remove session
                 </button>
               </div>
             )}
-          </div>
-          <div className="inspector-scroll">
             {selected ? (
               <NodeDetails detail={selected} />
             ) : (
               <p className="muted">Click a session, turn, page, stream, or recent event.</p>
             )}
+            <MappedEventLabels />
           </div>
         </aside>
       </section>
@@ -314,41 +308,7 @@ function App() {
   );
 }
 
-function Stats({ active, graph, llmSummary }) {
-  const values = [
-    ["Turns", graph.turnCount],
-    ["Candidates", graph.candidateCount],
-    ["Pages", active?.pages_crawled ?? graph.pageCount],
-    ["Streams", active?.streams_found ?? graph.streamCount],
-    ["LLM calls", llmSummary.totalCalls],
-    ["Rate limits", llmSummary.rateLimitCount],
-  ];
-
-  return (
-    <div className="stats">
-      {values.map(([label, value]) => (
-        <div className="stat" key={label}>
-          <strong>{value}</strong>
-          <span>{label}</span>
-        </div>
-      ))}
-      <div className="current-url">
-        <span>Current URL</span>
-        <strong>{active?.current_url || "Waiting for crawler activity"}</strong>
-      </div>
-      <div className="current-url">
-        <span>LLM pacing</span>
-        <strong>
-          {llmSummary.cooldownRemaining > 0
-            ? `Cooling down for ${llmSummary.cooldownRemaining}s`
-            : `Ready | dominant: ${llmSummary.primaryOperation}`}
-        </strong>
-      </div>
-    </div>
-  );
-}
-
-function TreeCanvas({ graph, llmSummary, selectedId, onSelect, onClear }) {
+function TreeCanvas({ graph, selectedId, onSelect, onClear }) {
   const containerRef = useRef(null);
   const dragRef = useRef(null);
   const fittedSessionRef = useRef("");
@@ -618,55 +578,27 @@ function TreeCanvas({ graph, llmSummary, selectedId, onSelect, onClear }) {
               </g>
             </svg>
 
-            <div className="canvas-overlay canvas-decision">
-              <p className="overlay-label">Current decision</p>
-              <strong>{graph.currentDecision.title}</strong>
-              <p className="overlay-copy">Why: {graph.currentDecision.why}</p>
-              <p className="overlay-copy">Confidence: {graph.currentDecision.confidence}</p>
-              <p className="overlay-copy">Next action: {graph.currentDecision.nextAction}</p>
-            </div>
-
-            <div className="canvas-right-stack">
-              <div className="canvas-overlay canvas-llm">
-                <div className="section-head">
-                  <span className="overlay-label">LLM pacing</span>
-                  <span className="tiny-pill">{llmSummary.totalCalls}</span>
-                </div>
-                <p className="overlay-copy">Main load: {llmSummary.primaryOperation}</p>
-                <p className="overlay-copy">Rate limits: {llmSummary.rateLimitCount}</p>
-                <p className="overlay-copy">
-                  Breathing space:{" "}
-                  {llmSummary.cooldownRemaining > 0
-                    ? `${llmSummary.cooldownRemaining}s remaining`
-                    : "No active cooldown"}
-                </p>
-                <p className="overlay-copy">Last retry wait: {llmSummary.lastRateLimitWait}s</p>
-              </div>
-
-              <div className="canvas-overlay canvas-latest">
-                <div className="section-head">
-                  <span className="overlay-label">Latest events</span>
-                  <span className="tiny-pill">{graph.latestEvents.length}</span>
-                </div>
-                <div className="event-stack">
-                  {graph.latestEvents.length === 0 && <p className="muted">No events yet.</p>}
-                  {graph.latestEvents.map((item) => (
-                    <button
-                      key={item.id}
-                      className={`event-chip${selectedId === item.id ? " active" : ""}`}
-                      onClick={() => onSelect(item.id)}
-                      type="button"
-                    >
-                      <span>{item.label}</span>
-                      <small>{item.subtitle}</small>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function MappedEventLabels() {
+  const mapped = Object.entries(eventLabels);
+
+  return (
+    <div className="detail-section mapped-events">
+      <h4>Possible mapped event labels</h4>
+      <dl className="detail-list mapped-list">
+        {mapped.map(([eventType, label]) => (
+          <React.Fragment key={eventType}>
+            <dt>{eventType}</dt>
+            <dd>{label}</dd>
+          </React.Fragment>
+        ))}
+      </dl>
     </div>
   );
 }
@@ -1295,7 +1227,6 @@ function buildGraph(events, active) {
     edges,
     bounds: positioned.bounds,
     latestEvents,
-    currentDecision: buildCurrentDecision(events),
     turnCount: turnMap.size,
     candidateCount: candidateTurnByUrl.size,
     pageCount: pageMap.size,
@@ -1479,30 +1410,6 @@ function decisionFromEvent(event, page) {
   );
 }
 
-function buildCurrentDecision(events) {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (["llm.navigate", "llm.classify", "llm.score", "llm.ad_check", "crawl.page_done", "crawl.page_fail", "stream.found"].includes(event.type)) {
-      return decisionFromEvent(event, {
-        score: event.data?.score ?? event.data?.combined ?? null,
-        pageSummary: event.data?.page_summary || "",
-        isSuspicious: event.data?.is_suspicious,
-        isPiracyHost: event.data?.is_piracy_host,
-        isOfficial: event.data?.is_official,
-        isPlayerPage: event.data?.is_player_page,
-        streams: event.data?.stream_urls || [],
-      });
-    }
-  }
-
-  return defaultDecision(
-    "Searching",
-    "Waiting for the crawler to emit the first actionable event",
-    "Pending",
-    "Start or resume a session",
-  );
-}
-
 function defaultDecision(title, why, confidence, nextAction) {
   return { title, why, confidence, nextAction };
 }
@@ -1608,68 +1515,12 @@ function latestEventSubtitle(event) {
   );
 }
 
-function summarizeLLM(events, nowMs) {
-  const operationCounts = new Map();
-  let totalCalls = 0;
-  let rateLimitCount = 0;
-  let lastRateLimitWait = 0;
-  let cooldownEndsAt = 0;
-
-  for (const event of events) {
-    const data = event.data || {};
-
-    if (event.type === "llm.call_start") {
-      const operation = prettifyOperation(data.operation);
-      operationCounts.set(operation, (operationCounts.get(operation) || 0) + 1);
-    }
-
-    if (event.type === "llm.call_ok") {
-      totalCalls = Math.max(totalCalls, data.call_count || 0);
-    }
-
-    if (event.type === "llm.rate_limit") {
-      rateLimitCount += 1;
-      lastRateLimitWait = Math.max(lastRateLimitWait, Math.round(data.wait_seconds || 0));
-      if (event.ts) {
-        const base = Date.parse(event.ts);
-        if (!Number.isNaN(base)) {
-          cooldownEndsAt = Math.max(cooldownEndsAt, base + ((data.wait_seconds || 0) * 1000));
-        }
-      }
-    }
-
-    if (event.type === "llm.cooldown" && event.ts) {
-      const base = Date.parse(event.ts);
-      if (!Number.isNaN(base)) {
-        cooldownEndsAt = Math.max(cooldownEndsAt, base + (Number(data.wait_seconds || 0) * 1000));
-      }
-    }
-  }
-
-  const sortedOps = [...operationCounts.entries()].sort((a, b) => b[1] - a[1]);
-  const primaryOperation = sortedOps[0]?.[0] || "idle";
-  const cooldownRemaining = Math.max(0, Math.ceil((cooldownEndsAt - nowMs) / 1000));
-
-  return {
-    totalCalls,
-    rateLimitCount,
-    lastRateLimitWait,
-    cooldownRemaining,
-    primaryOperation,
-  };
-}
-
 function normalizePlayers(players) {
   if (!isRecord(players)) return [];
   return Object.entries(players).map(([id, streams]) => ({
     id,
     streams: Array.isArray(streams) ? streams : [],
   }));
-}
-
-function prettifyOperation(value) {
-  if (!value) return "unknown";
-  return String(value).replace(/_/g, " ");
 }
 
 function toneFromStatus(status) {
