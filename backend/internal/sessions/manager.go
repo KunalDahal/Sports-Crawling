@@ -19,56 +19,100 @@ import (
 	"time"
 )
 
-const maxEventsPerSession = 1200
-
 type StartRequest struct {
-	Keyword  string `json:"keyword"`
-	APIKey   string `json:"api_key"`
-	DBName   string `json:"db_name"`
-	MongoURI string `json:"mongo_uri"`
-	ProxyURL string `json:"proxy_url"`
+	SessionID string `json:"session_id,omitempty"`
+	Match     string `json:"match"`
+	APIKey    string `json:"api_key"`
+	ProxyURL  string `json:"proxy_url"`
 }
 
-type Event struct {
-	Type      string         `json:"type"`
-	SessionID string         `json:"session_id"`
-	Data      map[string]any `json:"data"`
-	TS        string         `json:"ts"`
+type Link struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+type Keyword struct {
+	ID            string `json:"id"`
+	Query         string `json:"query"`
+	SearchResults int    `json:"search_results"`
+}
+
+type Node struct {
+	ID             string   `json:"id"`
+	ParentID       string   `json:"parent_id"`
+	KeywordID      string   `json:"keyword_id"`
+	Root           bool     `json:"root"`
+	Depth          int      `json:"depth"`
+	URL            string   `json:"url"`
+	Title          string   `json:"title"`
+	Summary        string   `json:"summary"`
+	Links          []Link   `json:"links"`
+	Iframes        []string `json:"iframes"`
+	StreamURLs     []string `json:"stream_urls"`
+	ChildIDs       []string `json:"child_ids"`
+	Classification string   `json:"classification"`
+	Color          string   `json:"color"`
+	Reason         string   `json:"reason"`
+	Status         string   `json:"status"`
+	Visited        bool     `json:"visited"`
+}
+
+type Stats struct {
+	Keywords   int `json:"keywords"`
+	Roots      int `json:"roots"`
+	Visited    int `json:"visited"`
+	Official   int `json:"official"`
+	Suspicious int `json:"suspicious"`
+	Clean      int `json:"clean"`
+}
+
+type State struct {
+	SessionID     string    `json:"session_id"`
+	Match         string    `json:"match"`
+	Status        string    `json:"status"`
+	Message       string    `json:"message"`
+	Error         string    `json:"error"`
+	StartedAt     string    `json:"started_at"`
+	FinishedAt    string    `json:"finished_at"`
+	CurrentNodeID string    `json:"current_node_id"`
+	CurrentURL    string    `json:"current_url"`
+	Keywords      []Keyword `json:"keywords"`
+	Nodes         []Node    `json:"nodes"`
+	Stats         Stats     `json:"stats"`
 }
 
 type Summary struct {
-	ID                   string    `json:"id"`
-	CrawlerSessionID     string    `json:"crawler_session_id,omitempty"`
-	Keyword              string    `json:"keyword"`
-	Status               string    `json:"status"`
-	StartedAt            time.Time `json:"started_at"`
-	FinishedAt           time.Time `json:"finished_at,omitempty"`
-	Events               int       `json:"events"`
-	PagesCrawled         int       `json:"pages_crawled"`
-	StreamsFound         int       `json:"streams_found"`
-	CurrentURL           string    `json:"current_url,omitempty"`
-	LastEventType        string    `json:"last_event_type,omitempty"`
-	LastError            string    `json:"last_error,omitempty"`
-	SearchResults        int       `json:"search_results"`
-	CandidatesRegistered int       `json:"candidates_registered"`
+	ID         string    `json:"id"`
+	Match      string    `json:"match"`
+	Status     string    `json:"status"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	CurrentURL string    `json:"current_url,omitempty"`
+	Message    string    `json:"message,omitempty"`
+	LastError  string    `json:"last_error,omitempty"`
+	Keywords   int       `json:"keywords"`
+	Roots      int       `json:"roots"`
+	Visited    int       `json:"visited"`
+	Official   int       `json:"official"`
+	Suspicious int       `json:"suspicious"`
+	Clean      int       `json:"clean"`
 }
 
 type Session struct {
 	mu          sync.RWMutex
 	summary     Summary
-	config      StartRequest // retained so Stop can drop the DB if requested
-	events      []Event
-	subscribers map[chan Event]struct{}
+	state       State
+	subscribers map[chan State]struct{}
 	cancel      context.CancelFunc
 	cmd         *exec.Cmd
 }
 
 type Manager struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
+	mu         sync.RWMutex
+	sessions   map[string]*Session
 	venvMu     sync.Mutex
 	venvPython string
-	venvErr    error 
+	venvErr    error
 }
 
 func NewManager() *Manager {
@@ -76,34 +120,33 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Start(req StartRequest) (*Summary, error) {
-	req.Keyword = strings.TrimSpace(req.Keyword)
-	if req.Keyword == "" {
-		return nil, errors.New("keyword is required")
-	}
-	if req.DBName == "" {
-		req.DBName = "spcrawler"
-	}
-	if req.MongoURI == "" {
-		req.MongoURI = "mongodb://localhost:27017"
+	req.Match = strings.TrimSpace(req.Match)
+	if req.Match == "" {
+		return nil, errors.New("match is required")
 	}
 
-	// Ensure the virtual environment is ready before we accept the session.
 	python, err := m.resolveVenvPython()
 	if err != nil {
 		return nil, fmt.Errorf("python venv setup failed: %w", err)
 	}
 
 	id := newID()
+	req.SessionID = id
+
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Session{
 		summary: Summary{
 			ID:        id,
-			Keyword:   req.Keyword,
+			Match:     req.Match,
 			Status:    "starting",
 			StartedAt: time.Now().UTC(),
 		},
-		config:      req,
-		subscribers: map[chan Event]struct{}{},
+		state: State{
+			SessionID: id,
+			Match:     req.Match,
+			Status:    "starting",
+		},
+		subscribers: map[chan State]struct{}{},
 		cancel:      cancel,
 	}
 
@@ -150,131 +193,16 @@ func (m *Manager) Stop(id string) bool {
 	return true
 }
 
-func (m *Manager) Remove(id string) (bool, error) {
-	s, ok := m.Get(id)
-	if !ok {
-		return false, nil
-	}
-
-	s.mu.RLock()
-	cfg := s.config
-	crawlerSessionID := s.summary.CrawlerSessionID
-	s.mu.RUnlock()
-
-	s.Stop()
-
-	m.mu.Lock()
-	delete(m.sessions, id)
-	m.mu.Unlock()
-
-	if crawlerSessionID == "" {
-		return true, nil
-	}
-
-	if err := m.removeSessionData(cfg, crawlerSessionID); err != nil {
-		return true, err
-	}
-	return true, nil
-}
-
-// StopWithDropDB stops the session and then drops its MongoDB database using
-// the same venv Python that runs the scraper (no extra Go dependency needed).
-func (m *Manager) StopWithDropDB(id string) bool {
+func (m *Manager) Remove(id string) bool {
 	s, ok := m.Get(id)
 	if !ok {
 		return false
 	}
-
-	s.mu.RLock()
-	cfg := s.config
-	s.mu.RUnlock()
-
 	s.Stop()
-
-	go m.dropDatabase(cfg)
+	m.mu.Lock()
+	delete(m.sessions, id)
+	m.mu.Unlock()
 	return true
-}
-
-func (m *Manager) dropDatabase(cfg StartRequest) {
-	if python, err := m.resolveVenvPython(); err != nil {
-		log.Printf("spcrawler: drop_db skipped - venv python not ready: %v", err)
-		return
-	} else {
-		if cfg.MongoURI == "" || cfg.DBName == "" {
-			log.Printf("spcrawler: drop_db skipped - missing MongoURI or DBName")
-			return
-		}
-
-		script := fmt.Sprintf(
-			"import pymongo; pymongo.MongoClient(%q).drop_database(%q)",
-			cfg.MongoURI, cfg.DBName,
-		)
-		out, runErr := runCmd(python, "-c", script)
-		if runErr != nil {
-			log.Printf("spcrawler: drop_db failed for %q: %v\n%s", cfg.DBName, runErr, out)
-			return
-		}
-		log.Printf("spcrawler: dropped database %q on %s", cfg.DBName, cfg.MongoURI)
-		return
-	}
-
-	m.venvMu.Lock()
-	python := m.venvPython
-	m.venvMu.Unlock()
-
-	if python == "" {
-		log.Printf("spcrawler: drop_db skipped – venv python not ready")
-		return
-	}
-	if cfg.MongoURI == "" || cfg.DBName == "" {
-		log.Printf("spcrawler: drop_db skipped – missing MongoURI or DBName")
-		return
-	}
-
-	script := fmt.Sprintf(
-		"import pymongo; pymongo.MongoClient(%q).drop_database(%q)",
-		cfg.MongoURI, cfg.DBName,
-	)
-	out, err := runCmd(python, "-c", script)
-	if err != nil {
-		log.Printf("spcrawler: drop_db failed for %q: %v\n%s", cfg.DBName, err, out)
-		return
-	}
-	log.Printf("spcrawler: dropped database %q on %s", cfg.DBName, cfg.MongoURI)
-}
-
-func (m *Manager) removeSessionData(cfg StartRequest, crawlerSessionID string) error {
-	python, err := m.resolveVenvPython()
-	if err != nil {
-		return fmt.Errorf("venv python not ready: %w", err)
-	}
-	if cfg.MongoURI == "" || cfg.DBName == "" {
-		return errors.New("missing MongoURI or DBName")
-	}
-
-	script := fmt.Sprintf(`
-from pymongo import MongoClient
-from bson import ObjectId
-
-client = MongoClient(%q)
-db = client[%q]
-session_id = %q
-doc = db["sessions"].find_one({"_id": ObjectId(session_id)}, {"parent_trees": 1})
-for tree in (doc or {}).get("parent_trees", []):
-    col = tree.get("collection")
-    if col:
-        db[col].drop()
-db["streams"].delete_many({"session_id": session_id})
-db["sessions"].delete_one({"_id": ObjectId(session_id)})
-print("removed", session_id)
-`, cfg.MongoURI, cfg.DBName, crawlerSessionID)
-
-	out, runErr := runCmd(python, "-c", script)
-	if runErr != nil {
-		return fmt.Errorf("remove session data failed: %w\n%s", runErr, out)
-	}
-	log.Printf("spcrawler: removed session %q from database %q", crawlerSessionID, cfg.DBName)
-	return nil
 }
 
 func (m *Manager) Shutdown() {
@@ -293,7 +221,7 @@ func (m *Manager) resolveVenvPython() (string, error) {
 		return m.venvPython, nil
 	}
 	if m.venvErr != nil {
-		return "", m.venvErr 
+		return "", m.venvErr
 	}
 
 	python, err := ensureVenv()
@@ -343,8 +271,6 @@ func ensureVenv() (string, error) {
 			return "", fmt.Errorf("pip install failed: %w\n%s", runErr, out)
 		}
 		log.Printf("spcrawler: requirements installed")
-	} else {
-		log.Printf("spcrawler: no requirements.txt found at %s – skipping pip install", reqFile)
 	}
 
 	return pythonBin, nil
@@ -366,7 +292,7 @@ func findSystemPython() (string, error) {
 		}
 		out, err := exec.Command(path, "-c", "import sys; assert sys.version_info >= (3,8)").CombinedOutput()
 		if err != nil {
-			log.Printf("spcrawler: skipping %s – %s", path, strings.TrimSpace(string(out)))
+			log.Printf("spcrawler: skipping %s - %s", path, strings.TrimSpace(string(out)))
 			continue
 		}
 		return path, nil
@@ -407,6 +333,7 @@ func (s *Session) launch(ctx context.Context, req StartRequest, python string) e
 	s.mu.Lock()
 	s.cmd = cmd
 	s.summary.Status = "running"
+	s.state.Status = "running"
 	s.mu.Unlock()
 
 	go func() {
@@ -425,16 +352,14 @@ func (s *Session) Summary() Summary {
 	return s.summary
 }
 
-func (s *Session) Events() []Event {
+func (s *Session) State() State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]Event, len(s.events))
-	copy(out, s.events)
-	return out
+	return s.state
 }
 
-func (s *Session) Subscribe() (chan Event, func()) {
-	ch := make(chan Event, 128)
+func (s *Session) Subscribe() (chan State, func()) {
+	ch := make(chan State, 32)
 	s.mu.Lock()
 	s.subscribers[ch] = struct{}{}
 	s.mu.Unlock()
@@ -455,33 +380,29 @@ func (s *Session) Stop() {
 	s.mu.Lock()
 	if s.summary.Status == "running" || s.summary.Status == "starting" {
 		s.summary.Status = "stopping"
+		s.state.Status = "stopping"
 	}
 	s.mu.Unlock()
 }
 
 func (s *Session) scanStdout(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	dec := json.NewDecoder(bufio.NewReader(r))
+	for {
+		var state State
+		if err := dec.Decode(&state); err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			s.recordInternalError("invalid_runner_state", err.Error())
+			return
 		}
-
-		var event Event
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			s.recordInternalError("invalid_runner_event", err.Error())
-			continue
-		}
-		s.addEvent(event)
-	}
-	if err := scanner.Err(); err != nil {
-		s.recordInternalError("runner_stdout", err.Error())
+		s.addState(state)
 	}
 }
 
 func (s *Session) scanStderr(r io.Reader) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		msg := strings.TrimSpace(scanner.Text())
 		if msg != "" {
@@ -497,85 +418,77 @@ func (s *Session) wait(cmd *exec.Cmd) {
 	defer s.mu.Unlock()
 	if s.summary.Status == "stopping" {
 		s.summary.Status = "stopped"
+		s.state.Status = "stopped"
 	} else if err != nil {
 		s.summary.Status = "failed"
 		s.summary.LastError = err.Error()
+		s.state.Status = "failed"
+		if s.state.Error == "" {
+			s.state.Error = err.Error()
+		}
 	} else if s.summary.Status != "finished" {
 		s.summary.Status = "finished"
+		s.state.Status = "finished"
 	}
 	if s.summary.FinishedAt.IsZero() {
 		s.summary.FinishedAt = time.Now().UTC()
 	}
+	if s.state.FinishedAt == "" {
+		s.state.FinishedAt = s.summary.FinishedAt.Format(time.RFC3339Nano)
+	}
+	s.broadcastLocked(s.state)
 }
 
-func (s *Session) addEvent(event Event) {
+func (s *Session) addState(state State) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if event.TS == "" {
-		event.TS = time.Now().UTC().Format(time.RFC3339Nano)
+	if state.SessionID == "" {
+		state.SessionID = s.summary.ID
 	}
-
-	s.events = append(s.events, event)
-	if len(s.events) > maxEventsPerSession {
-		s.events = s.events[len(s.events)-maxEventsPerSession:]
+	if state.Match == "" {
+		state.Match = s.summary.Match
 	}
-
-	s.summary.Events++
-	s.summary.LastEventType = event.Type
-	if event.SessionID != "" {
-		s.summary.CrawlerSessionID = event.SessionID
-	}
-	s.applyEventLocked(event)
-
-	for ch := range s.subscribers {
-		select {
-		case ch <- event:
-		default:
-		}
-	}
+	s.state = state
+	s.applyStateLocked(state)
+	s.broadcastLocked(state)
 }
 
-func (s *Session) applyEventLocked(event Event) {
-	data := event.Data
-	switch event.Type {
-	case "session.created":
-		s.summary.Status = "running"
-	case "session.finished":
-		s.summary.Status = "finished"
-		s.summary.FinishedAt = time.Now().UTC()
-		s.summary.PagesCrawled = intFrom(data["pages_crawled"], s.summary.PagesCrawled)
-		s.summary.StreamsFound = intFrom(data["streams_found"], s.summary.StreamsFound)
-	case "search.complete":
-		s.summary.SearchResults = intFrom(data["total_results"], s.summary.SearchResults)
-	case "search.candidates":
-		s.summary.CandidatesRegistered = intFrom(data["total"], s.summary.CandidatesRegistered)
-	case "crawl.page_start", "crawl.page_done", "crawl.page_fail", "llm.navigate", "llm.classify":
-		if url, ok := data["url"].(string); ok {
-			s.summary.CurrentURL = url
-		}
-	case "crawl.tree_done":
-		s.summary.PagesCrawled = intFrom(data["pages_crawled"], s.summary.PagesCrawled)
-	case "stream.found":
-		s.summary.StreamsFound++
-	case "error", "runner.error":
-		s.summary.LastError = fmt.Sprint(data["error"])
-		if s.summary.LastError == "" {
-			s.summary.LastError = fmt.Sprint(data["context"])
-		}
+func (s *Session) applyStateLocked(state State) {
+	s.summary.Match = state.Match
+	s.summary.Status = state.Status
+	s.summary.CurrentURL = state.CurrentURL
+	s.summary.Message = state.Message
+	s.summary.LastError = state.Error
+	s.summary.Keywords = state.Stats.Keywords
+	s.summary.Roots = state.Stats.Roots
+	s.summary.Visited = state.Stats.Visited
+	s.summary.Official = state.Stats.Official
+	s.summary.Suspicious = state.Stats.Suspicious
+	s.summary.Clean = state.Stats.Clean
+	if ts, ok := parseTime(state.StartedAt); ok {
+		s.summary.StartedAt = ts
+	}
+	if ts, ok := parseTime(state.FinishedAt); ok {
+		s.summary.FinishedAt = ts
 	}
 }
 
 func (s *Session) recordInternalError(context, message string) {
-	s.addEvent(Event{
-		Type:      "runner.error",
-		SessionID: s.summary.CrawlerSessionID,
-		TS:        time.Now().UTC().Format(time.RFC3339Nano),
-		Data: map[string]any{
-			"context": context,
-			"error":   message,
-		},
-	})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.summary.LastError = fmt.Sprintf("%s: %s", context, message)
+	s.state.Error = s.summary.LastError
+	s.broadcastLocked(s.state)
+}
+
+func (s *Session) broadcastLocked(state State) {
+	for ch := range s.subscribers {
+		select {
+		case ch <- state:
+		default:
+		}
+	}
 }
 
 func runnerPath() (string, error) {
@@ -594,17 +507,13 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func intFrom(value any, fallback int) int {
-	switch v := value.(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case json.Number:
-		n, err := v.Int64()
-		if err == nil {
-			return int(n)
-		}
+func parseTime(value string) (time.Time, bool) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, false
 	}
-	return fallback
+	ts, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts, true
 }
