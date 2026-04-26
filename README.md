@@ -1,46 +1,41 @@
 # spcrawler
 
-spcrawler is a full-stack sports stream investigation workspace.
+`spcrawler` is a sports-stream investigation workspace with three parts:
 
-It combines:
-- a Python crawler that searches sports stream queries with DDGS
-- a Go backend that manages crawler sessions and streams live snapshots
-- a React frontend that shows the crawl as a live graph with node inspection
+- `frontend`: a React/Vite UI for starting sessions and inspecting the live graph
+- `backend`: a Go API that manages sessions and streams state updates over SSE
+- `spcrawler`: the Python crawl engine that searches, crawls, classifies, and expands suspicious pages
 
 ## What It Does
 
-1. Accepts one match string such as `CSK vs GT IPL 2026`
-2. Builds DDGS search queries from that match
+1. Accepts a match string such as `CSK vs GT IPL 2026`
+2. Builds multiple DDGS search queries around that match
 3. Creates root nodes from search results
-4. Marks obvious official domains immediately from hostname hints
-5. Crawls suspicious pages with DFS
-6. Sends match context, search keyword, page snippet, iframes, and links to the LLM
-7. Lets the LLM classify the page as `official`, `suspicious`, or `clean`
-8. Lets the LLM choose which child links should be visited next
-9. Streams live state updates to the UI
+4. Marks known official broadcaster and league domains immediately from hostname hints
+5. Crawls non-official pages with DFS
+6. Extracts summaries, outbound links, iframes, and candidate stream URLs
+7. Uses Gemini to classify each page as `official`, `suspicious`, or `clean`
+8. Lets the model choose which suspicious child links should be explored next
+9. Streams full state snapshots to the frontend
 
-## Current Behavior
-
-- Official broadcaster and league domains such as Hotstar, JioCinema, ESPN, IPLT20, ICC, and similar known hosts are short-circuited before scraping.
-- Only suspicious pages expand into child nodes.
-- Child nodes are deduplicated with canonical URLs, and self-links are filtered out.
-- Each child is crawled from its own page URL, not from reused parent page content.
-- The live UI shows a short status trail such as scraping, LLM check, classification done, and child expansion.
+If Gemini calls fail, the crawler falls back to local heuristics so a session can still complete.
 
 ## Stack
 
-- Frontend: React + Vite
-- Backend: Go with `net/http` and SSE
-- Crawler: Python with `crawl4ai`, `ddgs`, and `requests`
-- LLM: Gemini API
+- Frontend: React 19 + Vite 7
+- Backend: Go 1.22 + `net/http`
+- Crawler: Python + `crawl4ai` + `ddgs` + `requests`
+- Streaming: Server-Sent Events
+- LLM: Google Gemini `gemini-2.5-flash-lite`
 
 ## Prerequisites
 
 - Node.js 18+
-- npm 9+
+- npm
 - Go 1.22+
-- Python 3.11+
-- Gemini API key
+- Python 3.8+
+- Internet access for DDGS, page crawling, and Gemini requests
+- A Gemini API key for best classification quality
 
 ## Quick Start
 
@@ -50,63 +45,59 @@ From the repository root:
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-This starts:
-- backend API
-- frontend dev server
+The launcher:
 
-If the default ports are busy, `start.ps1` chooses the next free ones and prints them.
+- picks the first free backend port starting at `8080`
+- picks the first free frontend port starting at `5173`
+- opens backend and frontend in separate PowerShell windows
+- sets `VITE_API_BASE` automatically for the frontend
+
+The script prints the exact frontend and backend URLs it started.
 
 ## Manual Start
 
 Backend:
 
 ```powershell
-cd backend
+cd W:\spcrawler\backend
 go run .\cmd\server
 ```
 
 Frontend:
 
 ```powershell
-cd frontend
+cd W:\spcrawler\frontend
 npm install
 npm run dev
 ```
 
-Crawler dependencies:
+The backend creates `backend\scripts\.venv` and installs `backend\scripts\requirements.txt` the first time you start a crawl. If `crawl4ai` browser binaries are missing, open that venv and run `crawl4ai-setup` once.
 
-```powershell
-cd backend\scripts
-pip install -r requirements.txt
-```
+## Session API
 
-Then run the browser setup for `crawl4ai` once in the Python environment:
-
-```powershell
-crawl4ai-setup
-```
-
-## Session Request
-
-`POST /api/sessions`
+Start request:
 
 ```json
 {
   "match": "CSK vs GT IPL 2026",
-  "api_key": "gemini-key",
+  "api_key": "your-gemini-key",
   "proxy_url": ""
 }
 ```
 
-## Main API
+Main routes:
 
-- `POST /api/sessions` starts a session
-- `GET /api/sessions` lists session summaries
-- `GET /api/sessions/{id}` returns one summary
-- `GET /api/sessions/{id}/state` returns the latest full snapshot
-- `GET /api/sessions/{id}/stream` streams live snapshots with SSE
-- `DELETE /api/sessions/{id}` stops a running session
-- `POST /api/sessions/{id}/remove` removes the session from memory
+- `GET /api/health`
+- `POST /api/sessions`
+- `GET /api/sessions`
+- `GET /api/sessions/{id}`
+- `GET /api/sessions/{id}/state`
+- `GET /api/sessions/{id}/stream`
+- `GET /api/sessions/{id}/events` alias for the same SSE stream
+- `DELETE /api/sessions/{id}`
+- `POST /api/sessions/{id}/remove`
+
+Each streamed event is emitted as SSE `event: state` with the full session snapshot.
 
 ## Repo Layout
 
@@ -118,36 +109,25 @@ spcrawler/
 |   |-- README.md
 |   |-- cmd/server/main.go
 |   |-- internal/sessions/
-|   |   |-- http.go
-|   |   `-- manager.go
 |   `-- scripts/
-|       |-- requirements.txt
-|       `-- run_scraper.py
 |-- frontend/
-|   |-- index.html
+|   |-- README.md
 |   |-- package.json
-|   |-- scripts/graph-logic-check.mjs
 |   `-- src/
-|       |-- graph-logic.js
-|       |-- main.jsx
-|       `-- styles.css
 `-- spcrawler/
     |-- README.MD
     `-- src/
-        |-- __init__.py
-        |-- client/
-        |   |-- llm.py
-        |   |-- model.py
-        |   `-- prompts.py
-        |-- instance/
-        |   |-- proxy_manager.py
-        |   `-- scraper.py
-        `-- utils/
-            |-- config.py
-            `-- constants.py
 ```
+
+## Notes
+
+- The UI uses `/api/sessions/{id}/stream`.
+- The backend also accepts `/api/sessions/{id}/events` for compatibility.
+- Official domains are short-circuited before page scraping.
+- Suspicious pages can expose direct stream URLs from page HTML, iframes, discovered links, or captured network requests.
 
 ## Docs
 
-- [backend/README.md](/w:/spcrawler/backend/README.md)
-- [spcrawler/README.MD](/w:/spcrawler/spcrawler/README.MD)
+- [backend/README.md](/W:/spcrawler/backend/README.md)
+- [frontend/README.md](/W:/spcrawler/frontend/README.md)
+- [spcrawler/README.MD](/W:/spcrawler/spcrawler/README.MD)

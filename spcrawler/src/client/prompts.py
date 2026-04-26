@@ -12,6 +12,7 @@ Rules:
 - Use MATCH and SEARCH_KEYWORD together
 - Do not mark a page suspicious just because SEARCH_KEYWORD contains words like live, stream, watch, or free
 - Choose suspicious only when the page itself or specific child links look like streaming, player, embed, telegram, mirror, redirect, or link-hub content
+- Direct stream urls in STREAM_URLS are strong suspicious evidence
 - If unsure between official and clean, choose clean
 - next_links is optional and may be empty
 - Pick only URLs from LINKS for next_links
@@ -33,6 +34,7 @@ URL: {url}
 TITLE: {title}
 SNIPPET: {snippet}
 IFRAMES: {iframes}
+STREAM_URLS: {stream_urls}
 LINKS: {links}
 """
 

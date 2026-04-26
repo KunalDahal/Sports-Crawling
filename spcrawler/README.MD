@@ -1,61 +1,69 @@
 # spcrawler
 
-`spcrawler` is the Python crawl engine used by the full-stack app.
+`spcrawler` is the Python crawl engine behind the full-stack app.
 
-It searches sports-stream queries, builds a DFS graph of candidate pages, marks official domains early, and asks the LLM both how to classify a page and which child links to explore next.
+It searches sports-stream queries, builds a DFS graph of candidate pages, short-circuits known official domains, extracts page evidence, and classifies pages as `official`, `suspicious`, or `clean`.
 
-## Flow
+## Current Behavior
 
-1. Take one match such as `CSK vs GT IPL 2026`
-2. Build DDGS search queries from the match
-3. Search each query with DDGS
-4. Create root nodes from the results
-5. Detect known official domains from hostname and skip scraping them
-6. Visit non-official nodes with DFS
-7. Extract that page's own summary, links, and iframes
-8. Send match + search keyword + page context to the LLM
-9. Classify the page as `official`, `suspicious`, or `clean`
-10. If suspicious, follow only the child links selected by the LLM
-11. Never revisit the same canonical URL twice
+1. Builds seven DDGS search queries from one match string
+2. Collects up to 20 root results per keyword
+3. Deduplicates nodes by canonical URL
+4. Skips known official domains before page scraping
+5. Crawls the remaining graph depth-first
+6. Extracts title, text snippet, outbound links, iframes, and candidate stream URLs
+7. Uses Gemini to classify the page and choose follow-up links
+8. Falls back to local heuristics if Gemini fails
+9. Stops after `MAX_DEPTH = 10` or `MAX_TOTAL_PAGES = 100`
 
-## Labels
+Candidate stream URLs can come from:
 
-- `official` -> blue
-- `suspicious` -> red
-- `clean` -> green
+- page HTML
+- iframe sources
+- discovered links
+- captured network requests
 
-## Notes
+## Source Layout
 
-- Official domains such as Hotstar, JioCinema, ESPN, IPLT20, ICC, and similar known hosts can be resolved from domain name alone.
-- Child nodes are created only for genuinely different URLs after canonical dedupe and self-link filtering.
-- Child summaries and links come from the child page itself.
+- `src/instance/scraper.py`: main crawl engine
+- `src/client/model.py`: Gemini HTTP client
+- `src/client/llm.py`: prompt shaping, parsing, and fallback heuristics
+- `src/client/prompts.py`: classification prompts
+- `src/utils/constants.py`: limits, search templates, and official domain hints
 
-## Install
+## Requirements
 
-```bash
-git clone https://github.com/KunalDahal/spcrawler.git
-cd spcrawler
-pip install -e .
+- Python 3.8+
+- `crawl4ai`
+- `ddgs`
+- `requests`
+- A Gemini API key for best results
+
+Install the runtime dependencies:
+
+```powershell
+cd W:\spcrawler\backend\scripts
+python -m pip install -r requirements.txt
 ```
 
-Then run browser setup for `crawl4ai`:
-
-```bash
-crawl4ai-setup
-```
+Then run `crawl4ai-setup` once in that Python environment if browser binaries are not installed yet.
 
 ## Usage
 
+This folder is source-based right now and does not include packaging metadata such as `pyproject.toml` or `setup.py`. Use it through the backend runner or import it from source.
+
+If you want to run it directly, execute from `W:\spcrawler\spcrawler` or add that folder to `PYTHONPATH`, then import from `src`:
+
 ```python
 import asyncio
-from spcrawler import Scraper
+from src import Scraper
 
 
 def show(state: dict) -> None:
     print(state["status"], state["message"])
 
 
-async def main():
+async def main() -> None:
     scraper = Scraper(
         match="CSK vs GT IPL 2026",
         api_key="your_gemini_key",
@@ -69,8 +77,6 @@ async def main():
 asyncio.run(main())
 ```
 
-`run()` returns the final state snapshot.
-
 ## Snapshot Shape
 
 Each snapshot contains:
@@ -80,6 +86,8 @@ Each snapshot contains:
 - `status`
 - `message`
 - `error`
+- `started_at`
+- `finished_at`
 - `current_node_id`
 - `current_url`
 - `keywords`
@@ -88,27 +96,27 @@ Each snapshot contains:
 
 Each node includes:
 
-- parent id
-- keyword id
-- depth
-- url
-- title
-- summary
-- links
-- iframes
-- child ids
-- classification
-- color
-- reason
-- status
-- visited
+- `id`
+- `parent_id`
+- `keyword_id`
+- `root`
+- `depth`
+- `url`
+- `title`
+- `summary`
+- `links`
+- `iframes`
+- `stream_urls`
+- `child_ids`
+- `classification`
+- `color`
+- `reason`
+- `status`
+- `visited`
 
-## Dependencies
+## Related Files
 
-- [crawl4ai](https://github.com/unclecode/crawl4ai)
-- [ddgs](https://pypi.org/project/ddgs/)
-- [requests](https://pypi.org/project/requests/)
-
-## License
-
-MIT
+- [src/instance/scraper.py](/W:/spcrawler/spcrawler/src/instance/scraper.py)
+- [src/client/llm.py](/W:/spcrawler/spcrawler/src/client/llm.py)
+- [src/client/model.py](/W:/spcrawler/spcrawler/src/client/model.py)
+- [src/utils/constants.py](/W:/spcrawler/spcrawler/src/utils/constants.py)

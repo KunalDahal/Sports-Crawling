@@ -26,6 +26,7 @@ from ..utils.constants import (
     MAX_DEPTH,
     MAX_LINKS_PER_PAGE,
     MAX_ROOTS_PER_KEYWORD,
+    MAX_STREAM_URLS,
     MAX_TOTAL_PAGES,
     OFFICIAL_DOMAIN_HINTS,
     REQUEST_TIMEOUT_MS,
@@ -35,6 +36,10 @@ from .proxy_manager import ProxyManager
 
 _CRAWL_RETRIES = 2
 _RETRY_DELAY = 1.5
+_STREAM_URL_RE = re.compile(
+    r'(?i)(https?://[^\s"\'<>]+?(?:\.m3u8|\.mpd)(?:\?[^\s"\'<>]*)?|acestream://[A-Za-z0-9]+)'
+)
+_STREAM_HINT_RE = re.compile(r"(?i)(\.m3u8|\.mpd|/hls/|manifest|chunklist|playlist|acestream)")
 
 UpdateCallback = Callable[[dict], None]
 
@@ -72,6 +77,48 @@ def _official_domain_hint(url: str) -> str:
         if host == normalized or host.endswith(f".{normalized}"):
             return normalized
     return ""
+
+
+def _dedupe_urls(urls: list[str], *, limit: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in urls:
+        url = value.strip()
+        if not url:
+            continue
+        key = _canonical_url(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _looks_like_stream_url(url: str) -> bool:
+    raw = str(url or "").strip()
+    if raw.lower().startswith("acestream://"):
+        return True
+    if not raw.lower().startswith(("http://", "https://")):
+        return False
+    return _STREAM_HINT_RE.search(raw) is not None
+
+
+def _extract_stream_urls(html: str, links: list[dict], iframes: list[str], network_urls: list[str]) -> list[str]:
+    candidates: list[str] = []
+    candidates.extend(match.group(1) for match in _STREAM_URL_RE.finditer(html))
+    for url in iframes:
+        if _looks_like_stream_url(url):
+            candidates.append(url)
+    for link in links:
+        url = link.get("url", "")
+        if _looks_like_stream_url(url):
+            candidates.append(url)
+    for url in network_urls:
+        if _looks_like_stream_url(url):
+            candidates.append(url)
+    return _dedupe_urls(candidates, limit=MAX_STREAM_URLS)
 
 
 def _make_keywords(match: str) -> list[str]:
@@ -156,6 +203,14 @@ def _extract_page(result, url: str) -> dict:
             break
 
     iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+    network_urls: list[str] = []
+    for item in getattr(result, "network_requests", []) or []:
+        if isinstance(item, dict):
+            request_url = item.get("url", "")
+        else:
+            request_url = getattr(item, "url", "")
+        if isinstance(request_url, str) and request_url:
+            network_urls.append(request_url)
 
     return {
         "url": url,
@@ -163,6 +218,7 @@ def _extract_page(result, url: str) -> dict:
         "text_snippet": _extract_text(raw_md),
         "links_found": links,
         "iframes": list(dict.fromkeys(iframes))[:20],
+        "stream_urls": _extract_stream_urls(html, links, iframes, network_urls),
     }
 
 
@@ -307,7 +363,7 @@ class Scraper:
             screenshot=False,
             wait_until="domcontentloaded",
             process_iframes=True,
-            capture_network_requests=False,
+            capture_network_requests=True,
             verbose=False,
             word_count_threshold=5,
             remove_overlay_elements=True,
@@ -388,6 +444,7 @@ class Scraper:
             node["visited"] = True
             node["links"] = []
             node["iframes"] = []
+            node["stream_urls"] = []
             self._state["message"] = "Official domain detected"
             self._visited_urls.add(_canonical_url(node["url"]))
             self._push()
@@ -405,6 +462,7 @@ class Scraper:
             node["summary"] = error_data.get("snippet", "")
             node["links"] = []
             node["iframes"] = []
+            node["stream_urls"] = []
             node["classification"] = verdict["label"]
             node["reason"] = verdict["reason"] or error_data.get("error", "Could not open page")
             node["color"] = {
@@ -429,6 +487,7 @@ class Scraper:
         node["summary"] = page["text_snippet"]
         node["links"] = page["links_found"]
         node["iframes"] = page["iframes"]
+        node["stream_urls"] = page["stream_urls"]
         node["classification"] = verdict["label"]
         node["reason"] = verdict["reason"]
         selected_urls = set(verdict.get("next_links", []))
@@ -524,6 +583,7 @@ class Scraper:
             "summary": "",
             "links": [],
             "iframes": [],
+            "stream_urls": [],
             "child_ids": [],
             "classification": "pending",
             "color": "yellow",

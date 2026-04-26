@@ -521,12 +521,42 @@ function NodePopup({ detail, onClose }) {
             <dd>{detail.child_ids?.length || 0}</dd>
             <dt>Iframes</dt>
             <dd>{detail.iframes?.length || 0}</dd>
+            <dt>Stream urls</dt>
+            <dd>{detail.stream_urls?.length || 0}</dd>
           </dl>
           {detail.summary && (
             <div className="detail-block">
               <strong>Summary</strong>
               <p>{detail.summary}</p>
             </div>
+          )}
+          {detail.stream_urls?.length > 0 && (
+            <>
+              <h4>Stream urls</h4>
+              <ul className="url-list">
+                {detail.stream_urls.slice(0, 3).map((url) => (
+                  <li key={url}>
+                    <a href={url} target="_blank" rel="noreferrer">
+                      {url}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {detail.iframes?.length > 0 && (
+            <>
+              <h4>Iframes</h4>
+              <ul className="url-list">
+                {detail.iframes.slice(0, 10).map((url) => (
+                  <li key={url}>
+                    <a href={url} target="_blank" rel="noreferrer">
+                      {url}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
           {detail.links?.length > 0 && (
             <>

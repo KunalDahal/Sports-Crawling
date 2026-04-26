@@ -14,6 +14,7 @@ _TITLE_LIMIT = 120
 _SNIPPET_LIMIT = 320
 _ERROR_LIMIT = 180
 _IFRAME_LIMIT = 160
+_STREAM_LIMIT = 160
 _LINK_TITLE_LIMIT = 40
 _LINK_URL_LIMIT = 160
 _MAX_NEXT_LINKS = 6
@@ -44,6 +45,11 @@ def _make_links(raw_links: list[dict], *, count: int) -> str:
 def _make_iframes(raw_iframes: list[str], *, count: int) -> str:
     iframes = [_clip(url, _IFRAME_LIMIT) for url in raw_iframes[:count]]
     return json.dumps(iframes, ensure_ascii=True, separators=(",", ":"))
+
+
+def _make_stream_urls(raw_stream_urls: list[str], *, count: int) -> str:
+    stream_urls = [_clip(url, _STREAM_LIMIT) for url in raw_stream_urls[:count]]
+    return json.dumps(stream_urls, ensure_ascii=True, separators=(",", ":"))
 
 
 def _collect_urls(raw: object, allowed: set[str] | None = None) -> list[str]:
@@ -98,14 +104,15 @@ def _fallback_node_verdict(page_data: dict) -> dict:
     snippet = page_data.get("text_snippet", "")
     iframes = page_data.get("iframes", [])
     links = page_data.get("links_found", [])
+    stream_urls = page_data.get("stream_urls", [])
     official_hint = _official_domain_hint(url)
     if official_hint:
         return {"label": "official", "reason": f"official domain {official_hint}", "next_links": []}
     suspicious_links = _fallback_next_links(links)
-    if _looks_suspicious(url, title, snippet, " ".join(iframes)):
+    if stream_urls or _looks_suspicious(url, title, snippet, " ".join(iframes)):
         return {
             "label": "suspicious",
-            "reason": "stream-style page",
+            "reason": "stream-style page" if not stream_urls else "direct stream urls found",
             "next_links": suspicious_links,
         }
     if suspicious_links:
@@ -155,6 +162,7 @@ class LLM:
         snippet_text = _clip(page_data.get("text_snippet", ""), _SNIPPET_LIMIT)
         raw_links = page_data.get("links_found", [])
         raw_iframes = page_data.get("iframes", [])
+        raw_stream_urls = page_data.get("stream_urls", [])
         allowed_urls = {str(link.get("url", "")).strip() for link in raw_links if str(link.get("url", "")).strip()}
         payload = prompts.CLASSIFY_NODE_USER.format(
             match=match_text,
@@ -163,6 +171,7 @@ class LLM:
             title=title_text,
             snippet=snippet_text,
             iframes=_make_iframes(raw_iframes, count=6),
+            stream_urls=_make_stream_urls(raw_stream_urls, count=3),
             links=_make_links(raw_links, count=8),
         )
         if len(prompts.CLASSIFY_NODE_SYSTEM) + len(payload) > LLM_MAX_REQUEST_CHARS:
@@ -173,6 +182,7 @@ class LLM:
                 title=title_text,
                 snippet=_clip(snippet_text, 180),
                 iframes=_make_iframes(raw_iframes, count=3),
+                stream_urls=_make_stream_urls(raw_stream_urls, count=2),
                 links=_make_links(raw_links, count=4),
             )
         if len(prompts.CLASSIFY_NODE_SYSTEM) + len(payload) > LLM_MAX_REQUEST_CHARS:
@@ -183,6 +193,7 @@ class LLM:
                 title=title_text,
                 snippet=_clip(snippet_text, 96),
                 iframes="[]",
+                stream_urls=_make_stream_urls(raw_stream_urls, count=1),
                 links="[]",
             )
         try:

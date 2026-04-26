@@ -48,6 +48,7 @@ type Node struct {
 	Summary        string   `json:"summary"`
 	Links          []Link   `json:"links"`
 	Iframes        []string `json:"iframes"`
+	StreamURLs     []string `json:"stream_urls"`
 	ChildIDs       []string `json:"child_ids"`
 	Classification string   `json:"classification"`
 	Color          string   `json:"color"`
