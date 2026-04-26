@@ -2,163 +2,219 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlparse
 
-from .model import Model
 from . import prompts
+from .model import Model
+from ..utils.constants import LLM_MAX_REQUEST_CHARS, OFFICIAL_DOMAIN_HINTS
+
+_MATCH_LIMIT = 120
+_URL_LIMIT = 220
+_TITLE_LIMIT = 120
+_SNIPPET_LIMIT = 320
+_ERROR_LIMIT = 180
+_IFRAME_LIMIT = 160
+_LINK_TITLE_LIMIT = 40
+_LINK_URL_LIMIT = 160
+_MAX_NEXT_LINKS = 6
+_SUSPICIOUS_RE = re.compile(
+    r"(stream|player|embed|m3u8|hls|telegram|mirror|redirect|acestream|streaming|crichd|streameast|buffstream|cricfree|sportsurge)",
+    re.IGNORECASE,
+)
+
+
+def _clip(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 2)].rstrip()}.."
+
+
+def _make_links(raw_links: list[dict], *, count: int) -> str:
+    links = [
+        {
+            "title": _clip(link.get("title", ""), _LINK_TITLE_LIMIT),
+            "url": _clip(link.get("url", ""), _LINK_URL_LIMIT),
+        }
+        for link in raw_links[:count]
+    ]
+    return json.dumps(links, ensure_ascii=True, separators=(",", ":"))
+
+
+def _make_iframes(raw_iframes: list[str], *, count: int) -> str:
+    iframes = [_clip(url, _IFRAME_LIMIT) for url in raw_iframes[:count]]
+    return json.dumps(iframes, ensure_ascii=True, separators=(",", ":"))
+
+
+def _collect_urls(raw: object, allowed: set[str] | None = None) -> list[str]:
+    urls: list[str] = []
+    if not isinstance(raw, list):
+        return urls
+    for value in raw:
+        url = str(value or "").strip()
+        if not url:
+            continue
+        if allowed is not None and url not in allowed:
+            continue
+        if url not in urls:
+            urls.append(url)
+        if len(urls) >= _MAX_NEXT_LINKS:
+            break
+    return urls
+
+
+def _looks_suspicious(*values: object) -> bool:
+    return any(_SUSPICIOUS_RE.search(str(value or "")) for value in values)
+
+
+def _official_domain_hint(url: str) -> str:
+    host = (urlparse(str(url or "")).hostname or "").lower().strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    for hint in OFFICIAL_DOMAIN_HINTS:
+        normalized = hint.lower().strip(".")
+        if host == normalized or host.endswith(f".{normalized}"):
+            return normalized
+    return ""
+
+
+def _fallback_next_links(raw_links: list[dict]) -> list[str]:
+    picks: list[str] = []
+    for link in raw_links:
+        url = str(link.get("url", "")).strip()
+        title = str(link.get("title", "")).strip()
+        if not url:
+            continue
+        if _looks_suspicious(url, title) and url not in picks:
+            picks.append(url)
+        if len(picks) >= _MAX_NEXT_LINKS:
+            break
+    return picks
+
+
+def _fallback_node_verdict(page_data: dict) -> dict:
+    url = page_data.get("url", "")
+    title = page_data.get("title", "")
+    snippet = page_data.get("text_snippet", "")
+    iframes = page_data.get("iframes", [])
+    links = page_data.get("links_found", [])
+    official_hint = _official_domain_hint(url)
+    if official_hint:
+        return {"label": "official", "reason": f"official domain {official_hint}", "next_links": []}
+    suspicious_links = _fallback_next_links(links)
+    if _looks_suspicious(url, title, snippet, " ".join(iframes)):
+        return {
+            "label": "suspicious",
+            "reason": "stream-style page",
+            "next_links": suspicious_links,
+        }
+    if suspicious_links:
+        return {
+            "label": "suspicious",
+            "reason": "suspicious child links",
+            "next_links": suspicious_links,
+        }
+    return {"label": "clean", "reason": "", "next_links": []}
+
+
+def _fallback_error_verdict(error_data: dict) -> dict:
+    official_hint = _official_domain_hint(error_data.get("url", ""))
+    if official_hint:
+        return {"label": "official", "reason": f"official domain {official_hint}", "next_links": []}
+    if _looks_suspicious(
+        error_data.get("url", ""),
+        error_data.get("title", ""),
+        error_data.get("snippet", ""),
+        error_data.get("error", ""),
+    ):
+        return {"label": "suspicious", "reason": "stream-style failed page", "next_links": []}
+    return {"label": "clean", "reason": "", "next_links": []}
 
 
 class LLM:
     def __init__(self, model: Model) -> None:
         self._model = model
 
-    def navigate(
-        self,
-        page_data:    dict,
-        current_url:  str,
-        depth:        int,
-        visited_urls: set[str],
-        keyword:      str = "",
-        rule_score:   int = 0,
-        dead_streak:  int = 0,
-    ) -> dict:
-        links: list[dict] = page_data.get("links_found", [])
-        links_lines = "\n".join(
-            f'  [{lnk.get("text", "").strip()[:50]}] -> {lnk.get("url", "")}'
-            for lnk in links[:30]
-        ) or "  (none)"
+    def _parse_label(self, raw: str) -> dict:
+        clean = re.sub(r"```[a-z]*|```", "", raw).strip()
+        data = json.loads(clean)
+        label = str(data.get("label", "")).lower().strip()
+        if label not in {"official", "suspicious", "clean"}:
+            label = "clean"
+        return {
+            "label": label,
+            "reason": str(data.get("reason", "")).strip(),
+            "next_links": _collect_urls(data.get("next_links")),
+        }
 
-        payload = prompts.NAVIGATE_USER_TEMPLATE.format(
-            keyword      = keyword,
-            url          = current_url,
-            depth        = depth,
-            title        = page_data.get("title", ""),
-            snippet      = (page_data.get("text_snippet") or "")[:400],
-            link_count   = len(links),
-            links_json   = links_lines,
-            iframes      = page_data.get("iframes", []),
-            scheme_urls  = page_data.get("stream_urls", []),
-            visited_json = json.dumps(list(visited_urls)[:30]),
-            rule_score   = rule_score,
-            dead_streak  = dead_streak,
+    def classify_node(self, match: str, keyword: str, page_data: dict) -> dict:
+        match_text = _clip(match, _MATCH_LIMIT)
+        keyword_text = _clip(keyword, _MATCH_LIMIT)
+        url_text = _clip(page_data.get("url", ""), _URL_LIMIT)
+        title_text = _clip(page_data.get("title", ""), _TITLE_LIMIT)
+        snippet_text = _clip(page_data.get("text_snippet", ""), _SNIPPET_LIMIT)
+        raw_links = page_data.get("links_found", [])
+        raw_iframes = page_data.get("iframes", [])
+        allowed_urls = {str(link.get("url", "")).strip() for link in raw_links if str(link.get("url", "")).strip()}
+        payload = prompts.CLASSIFY_NODE_USER.format(
+            match=match_text,
+            keyword=keyword_text,
+            url=url_text,
+            title=title_text,
+            snippet=snippet_text,
+            iframes=_make_iframes(raw_iframes, count=6),
+            links=_make_links(raw_links, count=8),
         )
-        raw = self._model.call(prompts.NAVIGATE_SYSTEM, payload, operation="navigate")
+        if len(prompts.CLASSIFY_NODE_SYSTEM) + len(payload) > LLM_MAX_REQUEST_CHARS:
+            payload = prompts.CLASSIFY_NODE_USER.format(
+                match=match_text,
+                keyword=keyword_text,
+                url=url_text,
+                title=title_text,
+                snippet=_clip(snippet_text, 180),
+                iframes=_make_iframes(raw_iframes, count=3),
+                links=_make_links(raw_links, count=4),
+            )
+        if len(prompts.CLASSIFY_NODE_SYSTEM) + len(payload) > LLM_MAX_REQUEST_CHARS:
+            payload = prompts.CLASSIFY_NODE_USER.format(
+                match=match_text,
+                keyword=keyword_text,
+                url=url_text,
+                title=title_text,
+                snippet=_clip(snippet_text, 96),
+                iframes="[]",
+                links="[]",
+            )
         try:
-            clean = re.sub(r"```[a-z]*|```", "", raw).strip()
-            data  = json.loads(clean)
-            if "next_url" in data and "next_urls" not in data:
-                nxt = data["next_url"]
-                data["next_urls"] = [nxt] if nxt else []
-            data.setdefault("next_urls", [])
-            data.setdefault("signal", "none")
-            data.setdefault("is_official", False)
-            data.setdefault("is_suspicious", False)
-            return data
-        except Exception as exc:
-            return {
-                "action": "stop", "next_urls": [], "reason": f"parse error: {exc}",
-                "signal": "none", "is_official": False, "is_suspicious": False,
-            }
-
-    def score_page(self, page_data: dict, task_url: str) -> int:
-        payload = (
-            f"URL: {task_url}\n"
-            f"Title: {page_data.get('title', '')}\n"
-            f"Text snippet: {(page_data.get('text_snippet') or '')[:400]}\n"
-            f"Iframes found: {len(page_data.get('iframes', []))}\n"
-            f"Stream URLs: {page_data.get('stream_urls', [])}\n"
-            f"CDN headers: {page_data.get('cdn_headers', {})}\n"
-        )
-        try:
-            raw   = self._model.call(prompts.SCORE_SYSTEM, payload, operation="score_page")
-            match = re.search(r"\d+", raw)
-            return max(0, min(100, int(match.group()))) if match else 0
+            raw = self._model.call(prompts.CLASSIFY_NODE_SYSTEM, payload, operation="classify_node")
+            verdict = self._parse_label(raw)
+            verdict["next_links"] = _collect_urls(verdict.get("next_links"), allowed_urls)
+            if verdict["label"] != "suspicious":
+                verdict["next_links"] = []
+            return verdict
         except Exception:
-            return 0
+            return _fallback_node_verdict(page_data)
 
-    def check_ads(self, page_data: dict) -> dict:
-        snippet = (page_data.get("text_snippet") or "")[:600]
-        html    = page_data.get("_raw_html", "")
-
-        buttons = re.findall(
-            r'\b(skip|close|continue|proceed|dismiss|allow|accept|skip\s*ad|'
-            r'skip\s*now|skip\s*in|watch\s*now|click\s*here|proceed)\b',
-            snippet, re.IGNORECASE,
+    def classify_error(self, match: str, keyword: str, error_data: dict) -> dict:
+        payload = prompts.CLASSIFY_ERROR_USER.format(
+            match=_clip(match, _MATCH_LIMIT),
+            keyword=_clip(keyword, _MATCH_LIMIT),
+            url=_clip(error_data.get("url", ""), _URL_LIMIT),
+            title=_clip(error_data.get("title", ""), _TITLE_LIMIT),
+            snippet=_clip(error_data.get("snippet", ""), 220),
+            error=_clip(error_data.get("error", ""), _ERROR_LIMIT),
         )
-
-        onclicks: list[str] = []
-        if html:
-            onclicks = list(dict.fromkeys(
-                re.findall(r'onclick=["\'][^"\']{0,120}["\']', html, re.IGNORECASE)
-            ))[:5]
-
-        redirects: list[str] = []
-        if html:
-            redirect_patterns = [
-                r'adf\.ly', r'ouo\.io', r'linkvertise', r'sh\.st', r'bc\.vc',
-                r'gestyy', r'shorte\.st', r'zipansion', r'cpmlink',
-                r'window\.location\s*=', r'window\.location\.href\s*=',
-                r'document\.location\s*=', r'meta[^>]+refresh',
-            ]
-            for pat in redirect_patterns:
-                found = re.findall(pat, html, re.IGNORECASE)
-                if found:
-                    redirects.append(found[0])
-
-        payload = prompts.AD_CHECK_USER.format(
-            title     = page_data.get("title", ""),
-            snippet   = snippet[:400],
-            buttons   = list(dict.fromkeys(b.lower() for b in buttons)),
-            redirects = redirects,
-            onclicks  = onclicks[:3],
-        )
+        if len(prompts.CLASSIFY_ERROR_SYSTEM) + len(payload) > LLM_MAX_REQUEST_CHARS:
+            payload = prompts.CLASSIFY_ERROR_USER.format(
+                match=_clip(match, _MATCH_LIMIT),
+                keyword=_clip(keyword, _MATCH_LIMIT),
+                url=_clip(error_data.get("url", ""), _URL_LIMIT),
+                title=_clip(error_data.get("title", ""), _TITLE_LIMIT),
+                snippet=_clip(error_data.get("snippet", ""), 120),
+                error=_clip(error_data.get("error", ""), 120),
+            )
         try:
-            raw   = self._model.call(prompts.AD_CHECK_SYSTEM, payload, operation="check_ads").strip()
-            clean = re.sub(r"```[a-z]*|```", "", raw).strip()
-            data  = json.loads(clean)
-            data.setdefault("has_ad", False)
-            data.setdefault("is_ad_page", False)
-            data.setdefault("ad_type", "none")
-            data.setdefault("action", "none")
-            data.setdefault("wait_seconds", 0)
-            data.setdefault("selector_hint", "")
-            data.setdefault("js_snippet", "")
-            return data
+            raw = self._model.call(prompts.CLASSIFY_ERROR_SYSTEM, payload, operation="classify_error")
+            return self._parse_label(raw)
         except Exception:
-            return {
-                "has_ad": False, "is_ad_page": False, "ad_type": "none",
-                "action": "none", "wait_seconds": 0, "selector_hint": "", "js_snippet": "",
-            }
-
-    def verify_live(self, url: str, context: str = "") -> bool:
-        payload = f"URL: {url}\nContext: {context[:300]}"
-        try:
-            raw = self._model.call(prompts.VERIFY_LIVE_SYSTEM, payload, operation="verify_live").strip().upper()
-            return raw.startswith("LIVE") and "NOT" not in raw
-        except Exception:
-            return False
-
-    def classify_page(self, page_data: dict) -> dict:
-        payload = prompts.CLASSIFY_PAGE_USER.format(
-            url         = page_data.get("url", ""),
-            title       = page_data.get("title", ""),
-            snippet     = (page_data.get("text_snippet") or "")[:400],
-            iframes     = page_data.get("iframes", []),
-            stream_urls = page_data.get("stream_urls", []),
-        )
-        try:
-            raw   = self._model.call(prompts.CLASSIFY_PAGE_SYSTEM, payload, operation="classify_page").strip()
-            clean = re.sub(r"```[a-z]*|```", "", raw).strip()
-            data  = json.loads(clean)
-            data.setdefault("is_official", False)
-            data.setdefault("is_suspicious", False)
-            data.setdefault("is_player_page", False)
-            data.setdefault("is_piracy_host", False)
-            data.setdefault("relevant_keywords", [])
-            data.setdefault("reason", "")
-            return data
-        except Exception:
-            return {
-                "is_official": False, "is_suspicious": False,
-                "is_player_page": False, "is_piracy_host": False,
-                "relevant_keywords": [], "reason": "",
-            }
+            return _fallback_error_verdict(error_data)

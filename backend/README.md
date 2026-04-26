@@ -1,35 +1,63 @@
 # backend
 
-Go API wrapper for the Python `spcrawler` engine.
+Go session manager for the Python `spcrawler` crawler.
+
+## What It Does
+
+- starts Python crawler sessions
+- keeps the latest state snapshot for each session
+- exposes session APIs
+- streams live snapshots to the frontend over SSE
+
+The backend is intentionally thin. Most crawl logic lives in the Python package.
 
 ## Run
 
 ```powershell
-cd D:\spcrawler\backend
+cd W:\spcrawler\backend
 go run .\cmd\server
 ```
 
-The server listens on `http://localhost:8080` by default.
+Default address:
 
-## API
+```text
+http://localhost:8080
+```
 
-- `POST /api/sessions` starts a scraper process.
-- `GET /api/sessions` lists sessions.
-- `GET /api/sessions/{id}` returns one session summary.
-- `GET /api/sessions/{id}/events` streams crawler events with Server-Sent Events.
-- `DELETE /api/sessions/{id}` stops a running session.
+## Session API
 
-Request body:
+- `POST /api/sessions`
+- `GET /api/sessions`
+- `GET /api/sessions/{id}`
+- `GET /api/sessions/{id}/state`
+- `GET /api/sessions/{id}/stream`
+- `DELETE /api/sessions/{id}`
+- `POST /api/sessions/{id}/remove`
+
+## Start Request
 
 ```json
 {
-  "keyword": "MI Vs GT",
+  "match": "CSK vs GT IPL 2026",
   "api_key": "gemini-key",
-  "db_name": "sports_scraper",
-  "mongo_uri": "mongodb://localhost:27017",
   "proxy_url": ""
 }
 ```
 
-The backend does not modify `spcrawler`; it launches `backend/scripts/run_scraper.py`,
-which creates a `Scraper` instance and forwards the engine's native events as JSON.
+## Runtime Notes
+
+- The backend launches `backend/scripts/run_scraper.py`.
+- The Python runner emits full JSON snapshots on stdout.
+- The backend stores the newest snapshot and forwards it to SSE subscribers.
+- Sessions can be stopped or removed without restarting the server.
+
+## Environment
+
+- `ADDR` sets the listen address. Default: `:8080`
+
+## Related Files
+
+- [cmd/server/main.go](/w:/spcrawler/backend/cmd/server/main.go)
+- [internal/sessions/http.go](/w:/spcrawler/backend/internal/sessions/http.go)
+- [internal/sessions/manager.go](/w:/spcrawler/backend/internal/sessions/manager.go)
+- [scripts/run_scraper.py](/w:/spcrawler/backend/scripts/run_scraper.py)

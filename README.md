@@ -1,39 +1,38 @@
 # spcrawler
 
-spcrawler is a full-stack live sports piracy investigation platform.
+spcrawler is a full-stack sports stream investigation workspace.
 
 It combines:
-- a Python crawler engine that searches and traverses streaming pages,
-- a Go backend that manages crawler sessions and streams events,
-- a React frontend that visualizes live crawl progress as an interactive graph.
+- a Python crawler that searches sports stream queries with DDGS
+- a Go backend that manages crawler sessions and streams live snapshots
+- a React frontend that shows the crawl as a live graph with node inspection
 
-The project is designed for live monitoring: you can start a session, watch page-by-page decisions, inspect nodes, and stop or remove sessions from one control room UI.
+## What It Does
 
-## What This Project Does
+1. Accepts one match string such as `CSK vs GT IPL 2026`
+2. Builds DDGS search queries from that match
+3. Creates root nodes from search results
+4. Marks obvious official domains immediately from hostname hints
+5. Crawls suspicious pages with DFS
+6. Sends match context, search keyword, page snippet, iframes, and links to the LLM
+7. Lets the LLM classify the page as `official`, `suspicious`, or `clean`
+8. Lets the LLM choose which child links should be visited next
+9. Streams live state updates to the UI
 
-1. Accepts a keyword (for example: match name + live stream query).
-2. Runs multi-turn DuckDuckGo discovery.
-3. Crawls discovered URLs recursively.
-4. Scores and classifies pages with rules + LLM.
-5. Detects potential stream URLs and verifies likely live sources.
-6. Stores crawl/session data in MongoDB.
-7. Streams events to the frontend for real-time graph visualization.
+## Current Behavior
 
-## Tech Stack
+- Official broadcaster and league domains such as Hotstar, JioCinema, ESPN, IPLT20, ICC, and similar known hosts are short-circuited before scraping.
+- Only suspicious pages expand into child nodes.
+- Child nodes are deduplicated with canonical URLs, and self-links are filtered out.
+- Each child is crawled from its own page URL, not from reused parent page content.
+- The live UI shows a short status trail such as scraping, LLM check, classification done, and child expansion.
 
-- Frontend: React 19 + Vite
-- Backend: Go (net/http + SSE)
-- Crawler engine: Python (crawl4ai, ddgs, pymongo, requests)
-- Database: MongoDB
-- LLM provider: Gemini API
+## Stack
 
-## Project Architecture
-
-- frontend sends session requests to backend
-- backend starts/stops Python crawler runs and exposes session APIs
-- crawler emits structured events
-- backend forwards events over SSE
-- frontend renders live graph + inspector from event stream
+- Frontend: React + Vite
+- Backend: Go with `net/http` and SSE
+- Crawler: Python with `crawl4ai`, `ddgs`, and `requests`
+- LLM: Gemini API
 
 ## Prerequisites
 
@@ -41,10 +40,9 @@ The project is designed for live monitoring: you can start a session, watch page
 - npm 9+
 - Go 1.22+
 - Python 3.11+
-- MongoDB running locally or remotely
 - Gemini API key
 
-## Quick Start (Recommended)
+## Quick Start
 
 From the repository root:
 
@@ -52,20 +50,22 @@ From the repository root:
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-This launches:
-- Backend on http://localhost:8080
-- Frontend on http://localhost:5173
+This starts:
+- backend API
+- frontend dev server
+
+If the default ports are busy, `start.ps1` chooses the next free ones and prints them.
 
 ## Manual Start
 
-### 1) Backend
+Backend:
 
 ```powershell
 cd backend
 go run .\cmd\server
 ```
 
-### 2) Frontend
+Frontend:
 
 ```powershell
 cd frontend
@@ -73,117 +73,81 @@ npm install
 npm run dev
 ```
 
-### 3) Python crawler dependencies
-
-The backend starts the crawler via backend/scripts/run_scraper.py.
-Install crawler requirements in your Python environment:
+Crawler dependencies:
 
 ```powershell
 cd backend\scripts
 pip install -r requirements.txt
 ```
 
-## Configuration
+Then run the browser setup for `crawl4ai` once in the Python environment:
 
-Frontend uses:
-- VITE_API_BASE (optional, default: http://localhost:8080)
+```powershell
+crawl4ai-setup
+```
 
-Backend uses:
-- ADDR (optional, default: :8080)
+## Session Request
 
-Crawler session payload fields:
-- keyword
-- api_key
-- db_name
-- mongo_uri
-- proxy_url (optional)
+`POST /api/sessions`
 
-## Core API Endpoints
+```json
+{
+  "match": "CSK vs GT IPL 2026",
+  "api_key": "gemini-key",
+  "proxy_url": ""
+}
+```
 
-- POST /api/sessions
-	Start a new crawler session.
+## Main API
 
-- GET /api/sessions
-	List all sessions.
+- `POST /api/sessions` starts a session
+- `GET /api/sessions` lists session summaries
+- `GET /api/sessions/{id}` returns one summary
+- `GET /api/sessions/{id}/state` returns the latest full snapshot
+- `GET /api/sessions/{id}/stream` streams live snapshots with SSE
+- `DELETE /api/sessions/{id}` stops a running session
+- `POST /api/sessions/{id}/remove` removes the session from memory
 
-- GET /api/sessions/{id}
-	Get one session summary.
-
-- GET /api/sessions/{id}/events
-	Server-Sent Events stream for live crawler events.
-
-- DELETE /api/sessions/{id}
-	Stop a running session.
-
-- POST /api/sessions/{id}/remove
-	Remove session from runtime and clean related Mongo session records.
-
-## Folder Structure
+## Repo Layout
 
 ```text
 spcrawler/
 |-- README.md
 |-- start.ps1
 |-- backend/
-|   |-- go.mod
 |   |-- README.md
-|   |-- cmd/
-|   |   `-- server/
-|   |       `-- main.go
-|   |-- internal/
-|   |   `-- sessions/
-|   |       |-- http.go
-|   |       `-- manager.go
+|   |-- cmd/server/main.go
+|   |-- internal/sessions/
+|   |   |-- http.go
+|   |   `-- manager.go
 |   `-- scripts/
 |       |-- requirements.txt
 |       `-- run_scraper.py
 |-- frontend/
 |   |-- index.html
 |   |-- package.json
-|   |-- README.md
-|   |-- scripts/
-|   |   `-- graph-logic-check.mjs
+|   |-- scripts/graph-logic-check.mjs
 |   `-- src/
 |       |-- graph-logic.js
 |       |-- main.jsx
 |       `-- styles.css
 `-- spcrawler/
-		|-- README.MD
-		`-- src/
-				|-- __init__.py
-				|-- events.py
-				|-- client/
-				|   |-- llm.py
-				|   |-- log.py
-				|   |-- model.py
-				|   `-- prompts.py
-				|-- instance/
-				|   |-- check.py
-				|   |-- proxy_manager.py
-				|   `-- scraper.py
-				`-- utils/
-						|-- config.py
-						|-- constants.py
-						`-- db.py
+    |-- README.MD
+    `-- src/
+        |-- __init__.py
+        |-- client/
+        |   |-- llm.py
+        |   |-- model.py
+        |   `-- prompts.py
+        |-- instance/
+        |   |-- proxy_manager.py
+        |   `-- scraper.py
+        `-- utils/
+            |-- config.py
+            `-- constants.py
 ```
 
-## Typical Local Workflow
+## Docs
 
-1. Start backend and frontend.
-2. Open frontend in browser.
-3. Create a session with keyword + API key + Mongo settings.
-4. Watch graph updates in real time.
-5. Inspect nodes for page evidence, scoring, and stream details.
-6. Stop or remove session when done.
-
-## Notes
-
-- The backend is intentionally lightweight and acts as an orchestration bridge.
-- Most crawling intelligence and event generation lives in the Python engine.
-- The frontend is optimized for live observability, not static reporting.
-
-## Additional Docs
-
-- backend/README.md
-- frontend/README.md
-- spcrawler/README.MD
+- [backend/README.md](/w:/spcrawler/backend/README.md)
+- [spcrawler/README.MD](/w:/spcrawler/spcrawler/README.MD)

@@ -51,11 +51,7 @@ func RegisterHandlers(mux *http.ServeMux, manager *Manager) {
 			case http.MethodGet:
 				writeJSON(w, http.StatusOK, session.Summary())
 			case http.MethodDelete:
-				if r.URL.Query().Get("drop_db") == "true" {
-					manager.StopWithDropDB(id)
-				} else {
-					manager.Stop(id)
-				}
+				manager.Stop(id)
 				writeJSON(w, http.StatusOK, map[string]string{"status": "stopping"})
 			default:
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -64,21 +60,21 @@ func RegisterHandlers(mux *http.ServeMux, manager *Manager) {
 		}
 
 		if tail == "remove" && r.Method == http.MethodPost {
-			ok, err := manager.Remove(id)
-			if !ok {
+			if !manager.Remove(id) {
 				writeError(w, http.StatusNotFound, "session not found")
-				return
-			}
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 			return
 		}
 
-		if tail == "events" && r.Method == http.MethodGet {
-			streamEvents(w, r, session)
+		if tail == "state" && r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, session.State())
+			return
+		}
+
+		if (tail == "stream" || tail == "events") && r.Method == http.MethodGet {
+			streamStates(w, r, session)
 			return
 		}
 
@@ -96,7 +92,7 @@ func splitSessionPath(path string) (string, string) {
 	return id, strings.Trim(parts[1], "/")
 }
 
-func streamEvents(w http.ResponseWriter, r *http.Request, session *Session) {
+func streamStates(w http.ResponseWriter, r *http.Request, session *Session) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming is not supported")
@@ -107,32 +103,29 @@ func streamEvents(w http.ResponseWriter, r *http.Request, session *Session) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	for _, event := range session.Events() {
-		writeSSE(w, event)
-	}
+	writeSSE(w, session.State())
 	flusher.Flush()
 
 	ch, unsubscribe := session.Subscribe()
 	defer unsubscribe()
 
-	notify := r.Context().Done()
 	for {
 		select {
-		case <-notify:
+		case <-r.Context().Done():
 			return
-		case event, ok := <-ch:
+		case state, ok := <-ch:
 			if !ok {
 				return
 			}
-			writeSSE(w, event)
+			writeSSE(w, state)
 			flusher.Flush()
 		}
 	}
 }
 
-func writeSSE(w http.ResponseWriter, event Event) {
-	payload, _ := json.Marshal(event)
-	fmt.Fprintf(w, "event: crawler\n")
+func writeSSE(w http.ResponseWriter, state State) {
+	payload, _ := json.Marshal(state)
+	fmt.Fprintf(w, "event: state\n")
 	fmt.Fprintf(w, "data: %s\n\n", payload)
 }
 

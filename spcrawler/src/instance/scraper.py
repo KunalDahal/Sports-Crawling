@@ -1,89 +1,138 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from typing import Callable
+from urllib.parse import urlparse, urlsplit, urlunsplit
+from uuid import uuid4
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
 from ddgs import DDGS
 
-from ..events import E, Event, EventBus, AsyncHandler
-from ..utils.config import Config
-from ..utils.db import Database
-from ..utils.constants import (
-    DDGS_TURNS,
-    DDGS_PER_TURN,
-    DDGS_TURN_DELAY,
-    DDGS_SEARCH_QUERIES,
-    HEADLESS_BROWSER,
-    USER_AGENT,
-    REQUEST_TIMEOUT_MS,
-    CRAWL_TIMEOUT_SEC,
-    MAX_DEPTH,
-    LLM_SCORE_TRIGGER,
-    PIRACY_SCORE_THRESHOLD,
-    TARGET_STREAM_EXTENSIONS,
-    TARGET_STREAM_SCHEMES,
-    TARGET_HLS_PATTERNS,
-    CDN_HEADERS,
-    MAX_DEAD_PAGES_BEFORE_BACKTRACK,
-    DEAD_END_SCORE,
-    MAX_TOTAL_PAGES,
-    MAX_STREAMS_PER_PLAYER,
-)
-from ..client.model import get_model
 from ..client.llm import LLM
-from .proxy_manager import ProxyManager
-from .check import (
-    filter_live_stream_iframes,
-    filter_live_stream_urls,
-    is_live_stream_url,
-    is_vod_url,
-    extract_players_with_streams,
+from ..client.model import get_model
+from ..utils.config import Config
+from ..utils.constants import (
+    BETWEEN_SEARCHES_SEC,
+    CRAWL_TIMEOUT_SEC,
+    DDGS_PER_TURN,
+    DDGS_SEARCH_QUERIES,
+    DDGS_TURN_DELAY,
+    DDGS_TURNS,
+    HEADLESS_BROWSER,
+    MAX_DEPTH,
+    MAX_LINKS_PER_PAGE,
+    MAX_ROOTS_PER_KEYWORD,
+    MAX_TOTAL_PAGES,
+    OFFICIAL_DOMAIN_HINTS,
+    REQUEST_TIMEOUT_MS,
+    USER_AGENT,
 )
+from .proxy_manager import ProxyManager
 
-_NAV_RETRIES      = 2
-_NAV_RETRY_DELAY  = 3.0
-_BETWEEN_DFS_WAIT = 2.0
+_CRAWL_RETRIES = 2
+_RETRY_DELAY = 1.5
+
+UpdateCallback = Callable[[dict], None]
 
 
-def _multi_search(
-    keyword: str,
-    on_turn: "((int, int, str, int, int, list[dict]) -> None) | None" = None,
-) -> list[dict]:
-    seen:        set[str]   = set()
-    all_results: list[dict] = []
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _hostname(url: str) -> str:
+    try:
+        return urlparse(url).hostname or url
+    except Exception:
+        return url
+
+
+def _canonical_url(url: str) -> str:
+    try:
+        parts = urlsplit(url.strip())
+    except Exception:
+        return url.strip()
+    scheme = (parts.scheme or "https").lower()
+    netloc = parts.netloc.lower()
+    path = parts.path or "/"
+    if path != "/":
+        path = path.rstrip("/") or "/"
+    return urlunsplit((scheme, netloc, path, parts.query, ""))
+
+
+def _official_domain_hint(url: str) -> str:
+    host = _hostname(url).lower().strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    for hint in OFFICIAL_DOMAIN_HINTS:
+        normalized = hint.lower().strip(".")
+        if host == normalized or host.endswith(f".{normalized}"):
+            return normalized
+    return ""
+
+
+def _make_keywords(match: str) -> list[str]:
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for template in DDGS_SEARCH_QUERIES:
+        value = template.format(keyword=match, match=match).strip()
+        key = value.lower()
+        if value and key not in seen:
+            seen.add(key)
+            keywords.append(value)
+    return keywords
+
+
+def _multi_search(query: str) -> list[dict]:
+    seen: set[str] = set()
+    results: list[dict] = []
 
     for turn in range(DDGS_TURNS):
-        query_template = DDGS_SEARCH_QUERIES[turn % len(DDGS_SEARCH_QUERIES)]
-        query          = query_template.format(keyword=keyword)
         try:
             with DDGS() as ddgs:
                 raw = ddgs.text(query, max_results=DDGS_PER_TURN)
-                new = [
-                    {"url": r["href"], "title": r.get("title", "")}
-                    for r in (raw or [])
-                    if r.get("href", "").startswith("http") and r["href"] not in seen
-                ]
-            for item in new:
-                seen.add(item["url"])
-            all_results.extend(new)
-            if on_turn:
-                on_turn(turn + 1, DDGS_TURNS, query, len(new), len(all_results), new)
+            for item in raw or []:
+                url = item.get("href", "")
+                if not url.startswith("http") or url in seen:
+                    continue
+                seen.add(url)
+                results.append({"url": url, "title": item.get("title", "")})
+                if len(results) >= MAX_ROOTS_PER_KEYWORD:
+                    return results
         except Exception:
-            if on_turn:
-                on_turn(turn + 1, DDGS_TURNS, query, 0, len(all_results), [])
+            pass
 
         if turn < DDGS_TURNS - 1:
             time.sleep(DDGS_TURN_DELAY)
 
-    return all_results
+    return results
 
 
-def _extract_page_data(result, url: str, keyword: str, parent_url: str | None) -> dict:
-    html   = result.html or ""
+def _extract_text(markdown: str) -> str:
+    lines = markdown.splitlines()
+    out: list[str] = []
+    size = 0
+    for line in lines:
+        value = line.strip()
+        if not value:
+            continue
+        if value.startswith("#"):
+            continue
+        if value.startswith("http://") or value.startswith("https://"):
+            continue
+        out.append(value)
+        size += len(value)
+        if size >= 360:
+            break
+    return " ".join(out)[:360].strip()
+
+
+def _extract_page(result, url: str) -> dict:
+    page_url = _canonical_url(url)
+    html = result.html or ""
     raw_md = ""
     if result.markdown:
         try:
@@ -91,725 +140,418 @@ def _extract_page_data(result, url: str, keyword: str, parent_url: str | None) -
         except AttributeError:
             raw_md = str(result.markdown)
 
-    text_snippet = _extract_prose(raw_md)
-
-    all_links: list[dict] = []
+    links: list[dict] = []
+    seen_urls: set[str] = set()
     for group in ("internal", "external"):
         for link in (result.links or {}).get(group, []):
             href = link.get("href", "")
-            text = link.get("text", "")
-            if href.startswith("http"):
-                all_links.append({"url": href, "title": text.strip()})
-
-    seen_urls:   set[str]   = set()
-    links_found: list[dict] = []
-    for lnk in all_links:
-        if lnk["url"] not in seen_urls:
-            seen_urls.add(lnk["url"])
-            links_found.append(lnk)
-    links_found = links_found[:80]
+            canonical_href = _canonical_url(href)
+            if not href.startswith("http") or canonical_href == page_url or canonical_href in seen_urls:
+                continue
+            seen_urls.add(canonical_href)
+            links.append({"url": href, "title": (link.get("text", "") or "").strip()})
+            if len(links) >= MAX_LINKS_PER_PAGE:
+                break
+        if len(links) >= MAX_LINKS_PER_PAGE:
+            break
 
     iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
 
-    stream_urls: list[str] = []
-    for ext in TARGET_STREAM_EXTENSIONS:
-        stream_urls += re.findall(
-            rf'https?://[^\s"\'<>]+{re.escape(ext)}[^\s"\'<>]*', html
-        )
-    for scheme in TARGET_STREAM_SCHEMES:
-        stream_urls += re.findall(rf'{re.escape(scheme)}[^\s"\'<>]+', html)
-    for pat in TARGET_HLS_PATTERNS:
-        stream_urls += re.findall(
-            rf'https?://[^\s"\'<>]+{re.escape(pat)}[^\s"\'<>]*', html
-        )
-    if result.network_requests:
-        for req in result.network_requests:
-            req_url = req.get("url", "")
-            if any(x in req_url for x in (".m3u8", ".ts?", "/hls/", "/live/", "rtmp://")):
-                stream_urls.append(req_url)
-    stream_urls = list(dict.fromkeys(stream_urls))
-
-    cdn_headers: dict = {}
-    if result.response_headers:
-        for key in CDN_HEADERS:
-            val = (result.response_headers.get(key)
-                   or result.response_headers.get(key.upper()))
-            if val:
-                cdn_headers[key] = val
-
     return {
-        "keyword":      keyword,
-        "url":          url,
-        "parent_url":   parent_url,
-        "title":        (result.metadata or {}).get("title", ""),
-        "page_summary": text_snippet,
-        "text_snippet": text_snippet,
-        "links_found":  links_found,
-        "iframes":      iframes,
-        "stream_urls":  stream_urls,
-        "cdn_headers":  cdn_headers,
-        "_raw_html":    html[:30_000],
-        "score":        0,
-        "crawled_at":   datetime.now(timezone.utc).isoformat(),
-        "is_ad_page":   False,
-        "is_player_page": False,
-        "is_official":  False,
-        "is_suspicious": False,
+        "url": url,
+        "title": (result.metadata or {}).get("title", "") or _hostname(url),
+        "text_snippet": _extract_text(raw_md),
+        "links_found": links,
+        "iframes": list(dict.fromkeys(iframes))[:20],
     }
-
-
-def _extract_prose(markdown: str) -> str:
-    lines       = markdown.splitlines()
-    prose_lines: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#"):
-            continue
-        if re.match(r'^https?://', stripped):
-            continue
-        if re.match(r'^[-*]\s*https?://', stripped):
-            continue
-        prose_lines.append(stripped)
-        if sum(len(l) for l in prose_lines) >= 600:
-            break
-    return " ".join(prose_lines)[:600].strip()
-
-
-def _rule_score(page_data: dict) -> int:
-    url_lower   = (page_data.get("url") or "").lower()
-    text_lower  = (page_data.get("text_snippet") or "").lower()
-    title_lower = (page_data.get("title") or "").lower()
-    combined    = f"{url_lower} {title_lower} {text_lower}"
-    score       = 0
-
-    if page_data.get("is_official"):
-        return 0
-
-    if page_data.get("stream_urls"):
-        score += 40
-        score += min(len(page_data["stream_urls"]) * 12, 35)
-
-    live_iframes = filter_live_stream_iframes(page_data.get("iframes", []))
-    if live_iframes:
-        score += 30
-        score += min(len(live_iframes) * 5, 20)
-
-    for kw in (page_data.get("relevant_keywords") or []):
-        if kw.lower() in combined:
-            score += 8
-
-    if page_data.get("is_suspicious"):
-        score += 10
-
-    cdn = " ".join(page_data.get("cdn_headers", {}).values()).lower()
-    if any(h in cdn for h in ["nginx", "cloudflare", "varnish"]):
-        score += 5
-
-    return min(score, 100)
-
-
-def _stream_type(url: str) -> str:
-    ul = url.lower()
-    if ".m3u8" in ul or ".mpd" in ul:
-        return "m3u8"
-    if ul.startswith("rtmp"):
-        return "rtmp"
-    if ul.startswith("acestream"):
-        return "acestream"
-    if ul.startswith("sopcast"):
-        return "sopcast"
-    return "other"
 
 
 class Scraper:
     def __init__(
         self,
-        keyword:   str,
-        api_key:   str,
-        collection = None,
+        match: str = "",
+        api_key: str = "",
         proxy_url: str = "",
-        mongo_uri: str = "mongodb://localhost:27017",
-        db_name:   str = "spcrawler",
-        seed_url:  str = "",
+        session_id: str = "",
+        on_update: UpdateCallback | None = None,
+        keyword: str = "",
     ) -> None:
-        self.keyword      = keyword
-        self._collection  = collection
-        self._visited:    set[str] = set()
-        self._total_pages = 0
-        self._seed_url    = seed_url
+        self.match = (match or keyword).strip()
+        self.session_id = session_id or uuid4().hex
+        self._on_update = on_update
+        self._visited_urls: set[str] = set()
+        self._node_by_id: dict[str, dict] = {}
+        self._node_by_url: dict[str, str] = {}
+        self._keyword_ids: list[str] = []
+        self._root_ids: list[str] = []
+        self._node_seq = 0
 
-        self._bus = EventBus()
-
-        cfg         = Config(api_key=api_key, db_name=db_name,
-                             mongo_uri=mongo_uri, proxy_url=proxy_url)
-        self._model = get_model(cfg, emit=self._emit_raw)
-        self._llm   = LLM(self._model)
-        self._db    = Database(cfg, bus=self._bus)
+        cfg = Config(api_key=api_key, proxy_url=proxy_url)
+        self._llm = LLM(get_model(cfg))
         self._proxy = ProxyManager(cfg)
 
-        self._session_id = self._db.create_session(keyword)
-        self._llm_sem    = asyncio.Semaphore(1)
+        self._state = {
+            "session_id": self.session_id,
+            "match": self.match,
+            "status": "idle",
+            "message": "",
+            "error": "",
+            "started_at": "",
+            "finished_at": "",
+            "current_node_id": "",
+            "current_url": "",
+            "keywords": [],
+            "nodes": [],
+            "stats": {
+                "keywords": 0,
+                "roots": 0,
+                "visited": 0,
+                "official": 0,
+                "suspicious": 0,
+                "clean": 0,
+            },
+        }
 
-    @property
-    def session_id(self) -> str:
-        return self._session_id
+    def snapshot(self) -> dict:
+        return copy.deepcopy(self._state)
 
-    def subscribe(self, handler: AsyncHandler) -> "Scraper":
-        self._bus.subscribe(handler)
-        return self
+    def run_sync(self, on_update: UpdateCallback | None = None) -> dict:
+        return asyncio.run(self.run(on_update=on_update))
 
-    def on_event(self, handler: AsyncHandler) -> AsyncHandler:
-        self._bus.subscribe(handler)
-        return handler
+    async def run(self, on_update: UpdateCallback | None = None) -> dict:
+        if on_update is not None:
+            self._on_update = on_update
 
-    def get_streams(self) -> list[dict]:
-        return self._db.get_streams(self._session_id)
+        self._state["status"] = "running"
+        self._state["started_at"] = _now()
+        self._state["message"] = "Generating keywords"
+        self._push()
 
-    def run_sync(self) -> list[str]:
-        return asyncio.run(self.run())
-
-    async def run(self) -> list[str]:
-        await self._bus.start()
         try:
-            return await self._run()
-        finally:
-            await self._bus.stop()
+            self._build_keywords()
+            await self._search_roots()
+            await self._walk_graph()
+            self._state["status"] = "finished"
+            self._state["message"] = "Finished"
+            self._state["finished_at"] = _now()
+            self._push()
+            return self.snapshot()
+        except Exception as exc:
+            self._state["status"] = "failed"
+            self._state["error"] = str(exc)
+            self._state["message"] = "Failed"
+            self._state["finished_at"] = _now()
+            self._push()
+            return self.snapshot()
 
-    async def _run(self) -> list[str]:
-        sid = self._session_id
-        db  = self._db
+    def _build_keywords(self) -> None:
+        for query in _make_keywords(self.match):
+            keyword_id = f"keyword:{len(self._state['keywords']) + 1}"
+            self._keyword_ids.append(keyword_id)
+            self._state["keywords"].append(
+                {
+                    "id": keyword_id,
+                    "query": query,
+                    "search_results": 0,
+                }
+            )
+        self._state["message"] = "Keywords ready"
+        self._push()
 
-        self._emit(E.SESSION_CREATED, {"keyword": self.keyword, "session_id": sid})
-        self._emit(E.SEARCH_START, {"keyword": self.keyword, "turns": DDGS_TURNS})
+    def _keyword_query(self, keyword_id: str) -> str:
+        for keyword in self._state["keywords"]:
+            if keyword["id"] == keyword_id:
+                return keyword["query"]
+        return self.match
 
-        all_results = await asyncio.to_thread(
-            _multi_search, self.keyword, self._make_ddgs_hook()
-        )
+    async def _search_roots(self) -> None:
+        for keyword in self._state["keywords"]:
+            self._state["error"] = ""
+            self._state["message"] = f"Searching {keyword['query']}"
+            self._push()
+            results = await asyncio.to_thread(_multi_search, keyword["query"])
+            keyword["search_results"] = len(results)
+            for item in results:
+                node_id, created = self._add_node(
+                    url=item["url"],
+                    title=item.get("title", "") or _hostname(item["url"]),
+                    parent_id=keyword["id"],
+                    keyword_id=keyword["id"],
+                    depth=0,
+                    is_root=True,
+                )
+                if created:
+                    self._root_ids.append(node_id)
+            self._push()
+            await asyncio.sleep(BETWEEN_SEARCHES_SEC)
 
-        self._emit(E.SEARCH_COMPLETE, {
-            "keyword":       self.keyword,
-            "total_results": len(all_results),
-        })
-
-        if not all_results:
-            db.finish_session(sid)
-            self._emit(E.SESSION_FINISHED, {
-                "keyword": self.keyword, "streams_found": 0,
-                "pages_crawled": 0, "streams": [],
-            })
-            return []
-
-        candidates = [r["url"] for r in all_results]
-
-        self._emit(E.SEARCH_CANDIDATES, {
-            "total":      len(candidates),
-            "candidates": candidates,
-        })
-
-        tree_map: dict[str, str] = db.register_parent_trees(sid, candidates)
-
-        for idx, start_url in enumerate(candidates, 1):
-            if self._total_pages >= MAX_TOTAL_PAGES:
-                break
-            col_name = tree_map[start_url]
-            await self._crawl_tree(start_url, col_name)
-            if idx < len(candidates):
-                await asyncio.sleep(_BETWEEN_DFS_WAIT)
-
-        streams = self.get_streams()
-        db.finish_session(sid, streams_found=len(streams))
-
-        self._emit(E.SESSION_FINISHED, {
-            "keyword":       self.keyword,
-            "streams_found": len(streams),
-            "pages_crawled": self._total_pages,
-            "streams":       [s["stream_url"] for s in streams],
-        })
-
-        return [s["stream_url"] for s in streams]
-
-    async def _crawl_tree(self, start_url: str, tree_col_name: str) -> None:
-        self._emit(E.CRAWL_TREE_START, {
-            "start_url":    start_url,
-            "tree_col":     tree_col_name,
-            "pages_so_far": self._total_pages,
-        })
+    async def _walk_graph(self) -> None:
+        if not self._root_ids:
+            self._state["message"] = "No search results"
+            self._push()
+            return
 
         proxy = self._proxy.get()
         browser_cfg = BrowserConfig(
-            headless            = HEADLESS_BROWSER,
-            user_agent          = USER_AGENT,
-            verbose             = False,
-            memory_saving_mode  = True,
-            enable_stealth      = True,
-            ignore_https_errors = True,
+            headless=HEADLESS_BROWSER,
+            user_agent=USER_AGENT,
+            verbose=False,
+            memory_saving_mode=True,
+            enable_stealth=True,
+            ignore_https_errors=True,
             **({"proxy": proxy["server"]} if proxy else {}),
         )
         run_cfg = CrawlerRunConfig(
-            cache_mode               = CacheMode.BYPASS,
-            page_timeout             = REQUEST_TIMEOUT_MS,
-            screenshot               = False,
-            wait_until               = "domcontentloaded",
-            process_iframes          = True,
-            capture_network_requests = True,
-            verbose                  = False,
-            word_count_threshold     = 5,
-            remove_overlay_elements  = True,
-            simulate_user            = True,
+            cache_mode=CacheMode.BYPASS,
+            page_timeout=REQUEST_TIMEOUT_MS,
+            screenshot=False,
+            wait_until="domcontentloaded",
+            process_iframes=True,
+            capture_network_requests=False,
+            verbose=False,
+            word_count_threshold=5,
+            remove_overlay_elements=True,
+            simulate_user=True,
         )
 
-        stack: list[tuple[str, int, int, str | None]] = [(start_url, 0, 0, None)]
-
         async with AsyncWebCrawler(config=browser_cfg) as crawler:
-            while stack:
-                if self._total_pages >= MAX_TOTAL_PAGES:
+            for root_id in self._root_ids:
+                if self._state["stats"]["visited"] >= MAX_TOTAL_PAGES:
                     break
+                await self._walk_root(crawler, run_cfg, root_id)
 
-                url, depth, dead_streak, parent_url = stack.pop()
-
-                if url in self._visited:
-                    continue
-                if depth > MAX_DEPTH:
-                    continue
-
-                if dead_streak >= MAX_DEAD_PAGES_BEFORE_BACKTRACK:
-                    self._emit(E.CRAWL_PAGE_FAIL, {
-                        "url": url, "depth": depth,
-                        "tree_col": tree_col_name,
-                        "reason": "dead_streak_backtrack",
-                    })
-                    continue
-
-                self._visited.add(url)
-                self._total_pages += 1
-
-                self._emit(E.CRAWL_PAGE_START, {
-                    "url":         url,
-                    "depth":       depth,
-                    "dead_streak": dead_streak,
-                    "parent_url":  parent_url,
-                    "tree_col":    tree_col_name,
-                })
-
-                page_data = await self._crawl_page(crawler, run_cfg, url, parent_url)
-                if page_data is None:
-                    self._emit(E.CRAWL_PAGE_FAIL, {
-                        "url": url, "depth": depth, "tree_col": tree_col_name,
-                        "reason": "crawl_failed",
-                    })
-                    continue
-
-                page_data["depth"] = depth
-
-                classification = await self._llm_call(self._llm.classify_page, page_data)
-                page_data["is_official"]        = classification.get("is_official", False)
-                page_data["is_suspicious"]      = classification.get("is_suspicious", False)
-                page_data["is_player_page"]     = classification.get("is_player_page", False)
-                page_data["is_piracy_host"]     = classification.get("is_piracy_host", False)
-                page_data["relevant_keywords"]  = classification.get("relevant_keywords", [])
-
-                self._emit(E.LLM_CLASSIFY, {
-                    "url":              url,
-                    "is_official":      page_data["is_official"],
-                    "is_suspicious":    page_data["is_suspicious"],
-                    "is_player_page":   page_data["is_player_page"],
-                    "is_piracy_host":   page_data["is_piracy_host"],
-                    "reason":           classification.get("reason", ""),
-                    "tree_col":         tree_col_name,
-                })
-
-                if page_data["is_official"]:
-                    self._emit(E.CRAWL_PAGE_FAIL, {
-                        "url": url, "depth": depth,
-                        "tree_col": tree_col_name,
-                        "reason": "official_domain_blocked",
-                    })
-                    continue
-
-                ad_info = await self._handle_ads(crawler, run_cfg, url, page_data)
-
-                if ad_info.get("is_ad_page", False):
-                    self._emit(E.CRAWL_PAGE_FAIL, {
-                        "url": url, "depth": depth,
-                        "tree_col": tree_col_name,
-                        "reason": "ad_page_discarded",
-                    })
-                    continue
-
-                rule  = _rule_score(page_data)
-                score = await self._score_page_async(page_data, rule, tree_col_name)
-                page_data["score"] = score
-                page_data["players"] = extract_players_with_streams(
-                    page_data,
-                    max_per_player=MAX_STREAMS_PER_PLAYER,
-                )
-
-                self._upsert_node(page_data, tree_col_name)
-
-                self._emit(E.CRAWL_PAGE_DONE, {
-                    "url":            url,
-                    "depth":          depth,
-                    "score":          score,
-                    "flagged":        score >= PIRACY_SCORE_THRESHOLD,
-                    "title":          page_data.get("title", ""),
-                    "page_summary":   page_data.get("page_summary", ""),
-                    "stream_urls":    page_data.get("stream_urls", []),
-                    "iframes":        page_data.get("iframes", []),
-                    "links_found":    page_data.get("links_found", []),
-                    "players":        page_data.get("players", {}),
-                    "tree_col":       tree_col_name,
-                    "is_player_page": page_data.get("is_player_page", False),
-                    "is_suspicious":  page_data.get("is_suspicious", False),
-                    "is_piracy_host": page_data.get("is_piracy_host", False),
-                    "is_official":    page_data.get("is_official", False),
-                    "parent_url":     parent_url,
-                })
-
-                found_stream = await self._collect_streams(page_data, score)
-
-                page_is_useful = (
-                    found_stream
-                    or bool(filter_live_stream_iframes(page_data.get("iframes", [])))
-                    or bool(page_data.get("stream_urls"))
-                    or score >= DEAD_END_SCORE
-                )
-                child_dead = 0 if page_is_useful else dead_streak + 1
-
-                if depth < MAX_DEPTH:
-                    nav = await self._llm_call(
-                        self._llm.navigate,
-                        page_data, url, depth, self._visited,
-                        self.keyword, rule, dead_streak,
-                    )
-                    self._emit(E.LLM_NAVIGATE, {
-                        "url":        url,
-                        "depth":      depth,
-                        "action":     nav.get("action"),
-                        "signal":     nav.get("signal"),
-                        "reason":     nav.get("reason"),
-                        "next_urls":  nav.get("next_urls", []),
-                        "tree_col":   tree_col_name,
-                        "parent_url": url,
-                    })
-
-                    if nav.get("action") == "continue":
-                        next_urls = [
-                            u for u in nav.get("next_urls", [])[:2]
-                            if u and u.startswith("http") and u not in self._visited
-                        ]
-                        for u in reversed(next_urls):
-                            stack.append((u, depth + 1, child_dead, url))
-
-        self._emit(E.CRAWL_TREE_DONE, {
-            "start_url":     start_url,
-            "tree_col":      tree_col_name,
-            "pages_crawled": self._total_pages,
-        })
-
-    async def _handle_ads(
+    async def _walk_root(
         self,
-        crawler:   AsyncWebCrawler,
-        run_cfg:   CrawlerRunConfig,
-        url:       str,
-        page_data: dict,
-    ) -> dict:
-        try:
-            ad_info = await self._llm_call(self._llm.check_ads, page_data)
-        except Exception:
-            return {"has_ad": False, "is_ad_page": False}
+        crawler: AsyncWebCrawler,
+        run_cfg: CrawlerRunConfig,
+        root_id: str,
+    ) -> None:
+        stack = [root_id]
+        while stack and self._state["stats"]["visited"] < MAX_TOTAL_PAGES:
+            node_id = stack.pop()
+            node = self._node_by_id.get(node_id)
+            if not node:
+                continue
+            node_key = _canonical_url(node["url"])
+            if node_key in self._visited_urls:
+                continue
+            if node["depth"] > MAX_DEPTH:
+                continue
 
-        self._emit(E.LLM_AD_CHECK, {
-            "url":           url,
-            "has_ad":        ad_info.get("has_ad", False),
-            "is_ad_page":    ad_info.get("is_ad_page", False),
-            "ad_type":       ad_info.get("ad_type", "none"),
-            "action":        ad_info.get("action", "none"),
-            "wait_seconds":  ad_info.get("wait_seconds", 0),
-            "selector_hint": ad_info.get("selector_hint", ""),
-        })
+            page = await self._inspect_node(crawler, run_cfg, node)
+            if not page:
+                continue
 
-        if ad_info.get("is_ad_page", False):
-            return ad_info
+            if node["classification"] != "suspicious":
+                continue
 
-        if not ad_info.get("has_ad"):
-            return ad_info
+            self._state["message"] = "Expanding child links"
+            self._push()
+            next_ids: list[str] = []
+            parent_url = _canonical_url(node["url"])
+            for link in page.get("selected_links", page["links_found"]):
+                if _canonical_url(link.get("url", "")) == parent_url:
+                    continue
+                child_id, created = self._add_node(
+                    url=link["url"],
+                    title=link.get("title", "") or _hostname(link["url"]),
+                    parent_id=node["id"],
+                    keyword_id=node["keyword_id"],
+                    depth=node["depth"] + 1,
+                    is_root=False,
+                )
+                if created:
+                    next_ids.append(child_id)
 
-        wait_sec      = int(ad_info.get("wait_seconds", 0))
-        selector_hint = ad_info.get("selector_hint", "")
-        action        = ad_info.get("action", "none")
-        ad_type       = ad_info.get("ad_type", "none")
-        js_snippet    = ad_info.get("js_snippet", "")
+            node["child_ids"] = next_ids
+            self._push()
 
-        self._emit(E.CRAWL_AD_DETECTED, {
-            "url": url, "ad_type": ad_type, "action": action,
-            "wait_seconds": wait_sec, "selector_hint": selector_hint,
-        })
+            for child_id in reversed(next_ids):
+                stack.append(child_id)
 
-        if wait_sec > 0:
-            await asyncio.sleep(min(wait_sec + 1, 15))
+    async def _inspect_node(
+        self,
+        crawler: AsyncWebCrawler,
+        run_cfg: CrawlerRunConfig,
+        node: dict,
+    ) -> dict | None:
+        node["status"] = "visiting"
+        self._state["error"] = ""
+        self._state["current_node_id"] = node["id"]
+        self._state["current_url"] = node["url"]
+        official_hint = _official_domain_hint(node["url"])
+        if official_hint:
+            node["classification"] = "official"
+            node["reason"] = f"official domain {official_hint}"
+            node["color"] = "blue"
+            node["status"] = "done"
+            node["visited"] = True
+            node["links"] = []
+            node["iframes"] = []
+            self._state["message"] = "Official domain detected"
+            self._visited_urls.add(_canonical_url(node["url"]))
+            self._push()
+            return None
+        self._state["message"] = "Scraping page"
+        self._push()
 
-        if action == "click_through" or ad_type in ("onclick_redirect", "fake_play", "redirect_page"):
-            dismiss_js = """
-                window._origOpen = window.open;
-                window.open = function() { return null; };
-                var adContainers = document.querySelectorAll(
-                    '[id*=ad],[class*=ad],[id*=overlay],[class*=overlay]'
-                );
-                adContainers.forEach(function(el) {
-                    el.removeAttribute('onclick');
-                    el.style.display = 'none';
-                });
-                var player = document.querySelector(
-                    'video, iframe[src*=stream], iframe[src*=embed], '
-                    + 'iframe[src*=player], [id*=player], [class*=player]'
-                );
-                if (player) { player.click(); }
-            """
-        elif action in ("skip", "close", "wait_and_skip"):
-            hint_lower = selector_hint.lower().replace('"', '\\"')
-            dismiss_js = f"""
-                var found = false;
-                var selectors = [
-                    '[id*=skip],[class*=skip]',
-                    '[id*=close],[class*=close]',
-                    '.skip-btn,.skip-button,.skipbtn,.ad-skip',
-                    '.closeBtn,.close-btn,[aria-label*=close],[aria-label*=skip]',
-                    'button,a,[role=button]'
-                ];
-                for (var s of selectors) {{
-                    var els = document.querySelectorAll(s);
-                    for (var el of els) {{
-                        var txt = (el.innerText || el.textContent || '').toLowerCase();
-                        if (txt.includes('{hint_lower}') || txt.includes('skip')
-                                || txt.includes('close') || txt.includes('continue')) {{
-                            el.click();
-                            found = true;
-                            break;
-                        }}
-                    }}
-                    if (found) break;
-                }}
-                var overlays = document.querySelectorAll(
-                    '.overlay,.modal,.popup,.ad-overlay,[id*=overlay],[class*=popup]'
-                );
-                overlays.forEach(function(el) {{ el.style.display = 'none'; }});
-            """
-        elif js_snippet:
-            dismiss_js = js_snippet
+        page, error_data = await self._crawl_page(crawler, run_cfg, node["url"])
+        keyword_query = self._keyword_query(node["keyword_id"])
+        if page is None:
+            self._state["message"] = "LLM error check"
+            self._push()
+            verdict = await asyncio.to_thread(self._llm.classify_error, self.match, keyword_query, error_data)
+            node["title"] = error_data.get("title", "") or node["title"]
+            node["summary"] = error_data.get("snippet", "")
+            node["links"] = []
+            node["iframes"] = []
+            node["classification"] = verdict["label"]
+            node["reason"] = verdict["reason"] or error_data.get("error", "Could not open page")
+            node["color"] = {
+                "official": "blue",
+                "suspicious": "red",
+                "clean": "green",
+            }[verdict["label"]]
+            node["status"] = "error"
+            node["visited"] = True
+            self._state["error"] = error_data.get("error", "Could not open page")
+            self._state["message"] = "Page open failed"
+            self._visited_urls.add(_canonical_url(node["url"]))
+            self._push()
+            return None
+
+        self._state["message"] = "Scrape done"
+        self._push()
+        self._state["message"] = "LLM page check"
+        self._push()
+        verdict = await asyncio.to_thread(self._llm.classify_node, self.match, keyword_query, page)
+        node["title"] = page["title"]
+        node["summary"] = page["text_snippet"]
+        node["links"] = page["links_found"]
+        node["iframes"] = page["iframes"]
+        node["classification"] = verdict["label"]
+        node["reason"] = verdict["reason"]
+        selected_urls = set(verdict.get("next_links", []))
+        if selected_urls:
+            page["selected_links"] = [link for link in page["links_found"] if link.get("url", "") in selected_urls]
         else:
-            dismiss_js = ""
-
-        if dismiss_js:
-            try:
-                skip_cfg = CrawlerRunConfig(
-                    cache_mode               = CacheMode.BYPASS,
-                    js_code                  = dismiss_js,
-                    page_timeout             = REQUEST_TIMEOUT_MS,
-                    verbose                  = False,
-                    wait_until               = "domcontentloaded",
-                    capture_network_requests = True,
-                )
-                result = await asyncio.wait_for(
-                    crawler.arun(url=url, config=skip_cfg),
-                    timeout=CRAWL_TIMEOUT_SEC,
-                )
-                self._emit(E.CRAWL_AD_HANDLED, {
-                    "url": url, "ad_type": ad_type,
-                    "selector_hint": selector_hint, "success": result.success,
-                })
-                if result.success and result.network_requests:
-                    existing = set(page_data.get("stream_urls", []))
-                    for req in result.network_requests:
-                        req_url = req.get("url", "")
-                        if (req_url not in existing and
-                                any(x in req_url for x in
-                                    (".m3u8", ".ts?", "/hls/", "/live/", "rtmp://"))):
-                            page_data.setdefault("stream_urls", []).append(req_url)
-                            existing.add(req_url)
-            except Exception as exc:
-                self._emit(E.CRAWL_AD_HANDLED, {
-                    "url": url, "ad_type": ad_type,
-                    "selector_hint": selector_hint,
-                    "success": False, "error": str(exc),
-                })
-
-        return ad_info
-
-    async def _collect_streams(self, page_data: dict, score: int) -> bool:
-        recorded = False
-        source   = page_data["url"]
-        context  = page_data.get("text_snippet", "")
-
-        player_map = extract_players_with_streams(page_data, max_per_player=MAX_STREAMS_PER_PLAYER)
-
-        if not player_map:
-            return False
-
-        for player_id, candidates in player_map.items():
-            player_recorded: list[str] = []
-            for stream_url in candidates:
-                if len(player_recorded) >= MAX_STREAMS_PER_PLAYER:
-                    break
-
-                if is_vod_url(stream_url):
-                    self._emit(E.STREAM_REJECTED, {
-                        "stream_url": stream_url,
-                        "source_url": source,
-                        "player_id":  player_id,
-                        "reason":     "vod_url_pattern",
-                    })
-                    continue
-
-                is_live = await self._llm_call(self._llm.verify_live, stream_url, context)
-
-                self._emit(E.LLM_VERIFY_LIVE, {
-                    "stream_url": stream_url,
-                    "source_url": source,
-                    "player_id":  player_id,
-                    "is_live":    is_live,
-                })
-
-                if not is_live:
-                    self._emit(E.STREAM_REJECTED, {
-                        "stream_url": stream_url,
-                        "source_url": source,
-                        "player_id":  player_id,
-                        "reason":     "llm_rejected",
-                    })
-                    continue
-
-                stype  = _stream_type(stream_url)
-                doc_id = self._db.record_stream(
-                    session_id  = self._session_id,
-                    stream_url  = stream_url,
-                    source_url  = source,
-                    keyword     = self.keyword,
-                    stream_type = stype,
-                    score       = score,
-                    player_id   = player_id,
-                )
-                if doc_id:
-                    player_recorded.append(stream_url)
-                    self._emit(E.STREAM_FOUND, {
-                        "stream_url":  stream_url,
-                        "source_url":  source,
-                        "stream_type": stype,
-                        "score":       score,
-                        "player_id":   player_id,
-                        "doc_id":      doc_id,
-                    })
-                    recorded = True
-
-        return recorded
-
-    def _upsert_node(self, node: dict, tree_col_name: str) -> None:
-        db_node = {k: v for k, v in node.items() if k != "_raw_html"}
-        self._db.upsert_node(self._session_id, db_node, tree_col_name)
-        if self._collection is None or isinstance(self._collection, str):
-            return
-        try:
-            self._collection.replace_one(
-                {"url": node["url"], "session_id": self._session_id},
-                {**db_node, "session_id": self._session_id},
-                upsert=True,
-            )
-        except Exception as exc:
-            self._emit(E.ERROR, {
-                "context": "upsert_node_caller_collection",
-                "error":   str(exc),
-            })
-
-    async def _score_page_async(self, page_data: dict, rule: int, tree_col: str) -> int:
-        if rule >= LLM_SCORE_TRIGGER:
-            llm_s    = await self._llm_call(self._llm.score_page, page_data, page_data["url"])
-            combined = min(100, (rule + llm_s) // 2)
-            self._emit(E.LLM_SCORE, {
-                "url":      page_data["url"],
-                "rule":     rule,
-                "llm":      llm_s,
-                "combined": combined,
-                "tree_col": tree_col,
-            })
-            return combined
-        return rule
-
-    async def _llm_call(self, fn, *args):
-        async with self._llm_sem:
-            result = await asyncio.to_thread(fn, *args)
-            return result
+            page["selected_links"] = []
+        node["color"] = {
+            "official": "blue",
+            "suspicious": "red",
+            "clean": "green",
+        }[verdict["label"]]
+        node["status"] = "done"
+        node["visited"] = True
+        self._state["error"] = ""
+        self._state["message"] = "Classification done"
+        self._visited_urls.add(_canonical_url(node["url"]))
+        self._push()
+        return page
 
     async def _crawl_page(
         self,
-        crawler:    AsyncWebCrawler,
-        run_cfg:    CrawlerRunConfig,
-        url:        str,
-        parent_url: str | None,
-    ) -> dict | None:
-        for attempt in range(1, _NAV_RETRIES + 2):
+        crawler: AsyncWebCrawler,
+        run_cfg: CrawlerRunConfig,
+        url: str,
+    ) -> tuple[dict | None, dict]:
+        error_data = {
+            "url": url,
+            "title": "",
+            "snippet": "",
+            "error": "",
+        }
+        for attempt in range(1, _CRAWL_RETRIES + 1):
             try:
                 result = await asyncio.wait_for(
                     crawler.arun(url=url, config=run_cfg),
                     timeout=CRAWL_TIMEOUT_SEC,
                 )
             except asyncio.TimeoutError:
-                self._emit(E.ERROR, {"context": "crawl_timeout", "url": url})
-                return None
-            except Exception as exc:
-                err = str(exc)
-                if "navigating" in err.lower() and attempt <= _NAV_RETRIES:
-                    await asyncio.sleep(_NAV_RETRY_DELAY)
+                error_data["error"] = f"Timeout after {attempt} attempt(s)"
+                if attempt < _CRAWL_RETRIES:
+                    await asyncio.sleep(_RETRY_DELAY)
                     continue
-                self._emit(E.ERROR, {"context": "crawl_exception", "url": url, "error": err})
-                return None
+                return None, error_data
+            except Exception as exc:
+                error_data["error"] = str(exc)
+                if attempt < _CRAWL_RETRIES:
+                    await asyncio.sleep(_RETRY_DELAY)
+                    continue
+                return None, error_data
 
             if not result.success:
-                err = result.error_message or ""
-                if "navigating" in err.lower() and attempt <= _NAV_RETRIES:
-                    await asyncio.sleep(_NAV_RETRY_DELAY)
+                error = result.error_message or ""
+                error_data["title"] = (result.metadata or {}).get("title", "") if getattr(result, "metadata", None) else ""
+                if getattr(result, "markdown", None):
+                    try:
+                        error_data["snippet"] = _extract_text(result.markdown.raw_markdown)
+                    except AttributeError:
+                        error_data["snippet"] = _extract_text(str(result.markdown))
+                error_data["error"] = error or f"Unknown crawl failure on attempt {attempt}"
+                if attempt < _CRAWL_RETRIES:
+                    await asyncio.sleep(_RETRY_DELAY)
                     continue
-                self._emit(E.ERROR, {"context": "crawl_failed", "url": url, "error": err})
-                return None
+                return None, error_data
 
-            return _extract_page_data(result, url, self.keyword, parent_url)
+            return _extract_page(result, url), error_data
+        return None, error_data
 
-        self._emit(E.ERROR, {"context": "crawl_all_retries_failed", "url": url})
-        return None
+    def _add_node(
+        self,
+        url: str,
+        title: str,
+        parent_id: str,
+        keyword_id: str,
+        depth: int,
+        is_root: bool,
+    ) -> tuple[str, bool]:
+        url_key = _canonical_url(url)
+        existing_id = self._node_by_url.get(url_key)
+        if existing_id:
+            return existing_id, False
 
-    def _emit(self, event_type: str, data: dict) -> None:
-        self._bus.emit(Event(
-            type       = event_type,
-            session_id = self._session_id,
-            data       = data,
-        ))
+        self._node_seq += 1
+        node_id = f"node:{self._node_seq}"
+        node = {
+            "id": node_id,
+            "parent_id": parent_id,
+            "keyword_id": keyword_id,
+            "root": is_root,
+            "depth": depth,
+            "url": url,
+            "title": title,
+            "summary": "",
+            "links": [],
+            "iframes": [],
+            "child_ids": [],
+            "classification": "pending",
+            "color": "yellow",
+            "reason": "",
+            "status": "pending",
+            "visited": False,
+        }
+        self._node_by_url[url_key] = node_id
+        self._node_by_id[node_id] = node
+        self._state["nodes"].append(node)
+        return node_id, True
 
-    def _emit_raw(self, event_type: str, data: dict) -> None:
-        self._emit(event_type, data)
+    def _push(self) -> None:
+        stats = {
+            "keywords": len(self._state["keywords"]),
+            "roots": len(self._root_ids),
+            "visited": 0,
+            "official": 0,
+            "suspicious": 0,
+            "clean": 0,
+        }
+        for node in self._state["nodes"]:
+            if node["visited"]:
+                stats["visited"] += 1
+            if node["classification"] in stats:
+                stats[node["classification"]] += 1
+        self._state["stats"] = stats
 
-    def _make_ddgs_hook(self):
-        sid = self._session_id
-        bus = self._bus
-
-        def on_turn(
-            turn: int,
-            total: int,
-            query: str,
-            new_count: int,
-            total_count: int,
-            results: list[dict],
-        ) -> None:
-            bus.emit(Event(
-                type       = E.SEARCH_TURN_DONE,
-                session_id = sid,
-                data       = {
-                    "turn":        turn,
-                    "total_turns": total,
-                    "query":       query,
-                    "new_results": new_count,
-                    "total":       total_count,
-                    "results":     results,
-                },
-            ))
-
-        return on_turn
+        if self._on_update is None:
+            return
+        self._on_update(self.snapshot())

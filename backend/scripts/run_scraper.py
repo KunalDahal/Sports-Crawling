@@ -6,13 +6,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SPCRAWLER_DIR = ROOT / "spcrawler"
 sys.path.insert(0, str(SPCRAWLER_DIR))
 
-from src import Scraper  # noqa: E402
-from src.events import Event  # noqa: E402
+from src import Scraper
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -21,38 +19,43 @@ def emit(payload: dict[str, Any]) -> None:
 
 async def main() -> None:
     req = json.load(sys.stdin)
+    match = req.get("match", "") or req.get("keyword", "")
+
     scraper = Scraper(
-        keyword=req.get("keyword", ""),
+        match=match,
         api_key=req.get("api_key", ""),
-        db_name=req.get("db_name", "spcrawler"),
-        mongo_uri=req.get("mongo_uri", "mongodb://localhost:27017"),
         proxy_url=req.get("proxy_url", ""),
+        session_id=req.get("session_id", ""),
+        on_update=emit,
     )
-
-    async def on_event(event: Event) -> None:
-        emit(event.as_dict())
-
-    scraper.subscribe(on_event)
-
-    try:
-        streams = await scraper.run()
-        emit(
-            {
-                "type": "runner.finished",
-                "session_id": scraper.session_id,
-                "data": {"streams": streams, "count": len(streams)},
-            }
-        )
-    except Exception as exc:
-        emit(
-            {
-                "type": "runner.error",
-                "session_id": scraper.session_id,
-                "data": {"context": "scraper_run", "error": str(exc)},
-            }
-        )
-        raise
+    await scraper.run()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        emit(
+            {
+                "session_id": "",
+                "match": "",
+                "status": "failed",
+                "message": "Runner failed",
+                "error": str(exc),
+                "started_at": "",
+                "finished_at": "",
+                "current_node_id": "",
+                "current_url": "",
+                "keywords": [],
+                "nodes": [],
+                "stats": {
+                    "keywords": 0,
+                    "roots": 0,
+                    "visited": 0,
+                    "official": 0,
+                    "suspicious": 0,
+                    "clean": 0,
+                },
+            }
+        )
+        raise
