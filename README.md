@@ -9,11 +9,11 @@
 ## What It Does
 
 1. Accepts a match string such as `CSK vs GT IPL 2026`
-2. Builds multiple DDGS search queries around that match
-3. Creates root nodes from search results
-4. Marks known official broadcaster and league domains immediately from hostname hints
-5. Crawls non-official pages with DFS
-6. Extracts summaries, outbound links, iframes, and candidate stream URLs
+2. Uses Gemini to summarize that description into one DDGS search keyword
+3. Uses DDGS to return multiple links for that keyword
+4. Uses Gemini to skip official pages, news articles, blogs, score pages, and generic sports content before root nodes are created
+5. Crawls only suspicious root pages with DFS
+6. Extracts summaries, up to 100 outbound links, iframes, and up to 5 candidate stream URLs
 7. Uses Gemini to classify each page as `official`, `suspicious`, or `clean`
 8. Lets the model choose which suspicious child links should be explored next
 9. Streams full state snapshots to the frontend

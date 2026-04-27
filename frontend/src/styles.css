@@ -1,6 +1,6 @@
 :root {
   color: #16202a;
-  background: #f4f7fb;
+  background: #eef3f8;
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1.4;
@@ -27,7 +27,7 @@ button {
 
 .shell {
   min-height: 100vh;
-  padding: 16px;
+  padding: 18px;
 }
 
 .workspace {
@@ -37,11 +37,13 @@ button {
 
 .toolbar,
 .summary-row,
-.activity-bar,
+.status-band,
+.keyword-strip,
 .graph-panel {
   background: #ffffff;
-  border: 1px solid #d7e0ea;
+  border: 1px solid #d8e2ec;
   border-radius: 8px;
+  box-shadow: 0 14px 40px rgba(31, 47, 70, 0.06);
 }
 
 .toolbar {
@@ -50,7 +52,7 @@ button {
   gap: 12px;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 16px 18px;
 }
 
 .toolbar-title {
@@ -190,68 +192,94 @@ p {
   margin-top: 12px;
 }
 
-.activity-bar {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+.status-band {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-start;
   padding: 12px 14px;
 }
 
-.activity-section {
-  display: grid;
-  gap: 12px;
-}
-
-.activity-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.activity-head strong {
-  color: #16202a;
-  font-size: 0.95rem;
-}
-
-.activity-grid {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.activity-grid-error {
-  grid-template-columns: 1fr;
-}
-
-.activity-item {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  background: #f7f9fc;
-  border-radius: 8px;
-  padding: 10px 12px;
-}
-
-.activity-item span {
-  color: #5f6f81;
+.status-band span {
+  border-radius: 999px;
   font-size: 0.72rem;
+  font-weight: 800;
+  padding: 5px 10px;
   text-transform: uppercase;
 }
 
-.activity-item strong {
+.status-band strong {
   color: #16202a;
-  font-size: 0.92rem;
+  font-size: 0.95rem;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
 
-.activity-item-wide {
-  grid-column: span 2;
+.status-blue span {
+  background: #e9f3ff;
+  color: #184d87;
 }
 
-.activity-error-panel .activity-item {
-  background: #fff4f2;
+.status-green span {
+  background: #ebfbf2;
+  color: #198154;
+}
+
+.status-gray span {
+  background: #eef3f6;
+  color: #607082;
+}
+
+.keyword-strip {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  padding: 12px;
+}
+
+.keyword-card {
+  background: #f7f9fc;
+  border: 1px solid #d7e0ea;
+  border-radius: 8px;
+  color: #16202a;
+  display: grid;
+  gap: 8px;
+  min-height: 116px;
+  padding: 12px;
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.keyword-card:hover {
+  border-color: #b8c7d8;
+  transform: translateY(-1px);
+}
+
+.keyword-card.selected {
+  border-color: #184d87;
+  box-shadow: inset 0 0 0 2px rgba(24, 77, 135, 0.18);
+}
+
+.keyword-card-top,
+.keyword-stats {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.keyword-card-top span,
+.keyword-stats {
+  color: #5f6f81;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.keyword-query {
+  color: #16202a;
+  font-size: 0.96rem;
+  overflow-wrap: anywhere;
 }
 
 .graph-panel {
@@ -508,18 +536,6 @@ p {
   .summary-row {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
-
-  .activity-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .activity-item-wide {
-    grid-column: span 2;
-  }
-
-  .activity-bar {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 900px) {
@@ -529,14 +545,6 @@ p {
 
   .summary-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .activity-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .activity-item-wide {
-    grid-column: span 1;
   }
 
   .graph-panel {
@@ -569,7 +577,7 @@ p {
     padding: 8px;
   }
 
-  .activity-head {
+  .status-band {
     align-items: flex-start;
     flex-direction: column;
   }

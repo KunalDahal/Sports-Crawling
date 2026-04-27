@@ -17,7 +17,18 @@ _IFRAME_LIMIT = 160
 _STREAM_LIMIT = 160
 _LINK_TITLE_LIMIT = 40
 _LINK_URL_LIMIT = 160
+_SEARCH_TITLE_LIMIT = 80
+_SEARCH_URL_LIMIT = 180
 _MAX_NEXT_LINKS = 6
+_MAX_SEARCH_RESULTS_FOR_LLM = 20
+_KEYWORD_VARIANTS = (
+    "{query} live stream",
+    "{query} watch live",
+    "{query} free live stream",
+    "{query} online stream",
+    "{query} live match stream",
+    "{query} hd stream",
+)
 _SUSPICIOUS_RE = re.compile(
     r"(stream|player|embed|m3u8|hls|telegram|mirror|redirect|acestream|streaming|crichd|streameast|buffstream|cricfree|sportsurge)",
     re.IGNORECASE,
@@ -40,6 +51,17 @@ def _make_links(raw_links: list[dict], *, count: int) -> str:
         for link in raw_links[:count]
     ]
     return json.dumps(links, ensure_ascii=True, separators=(",", ":"))
+
+
+def _make_search_results(raw_results: list[dict], *, count: int) -> str:
+    results = [
+        {
+            "title": _clip(result.get("title", ""), _SEARCH_TITLE_LIMIT),
+            "url": _clip(result.get("url", ""), _SEARCH_URL_LIMIT),
+        }
+        for result in raw_results[:count]
+    ]
+    return json.dumps(results, ensure_ascii=True, separators=(",", ":"))
 
 
 def _make_iframes(raw_iframes: list[str], *, count: int) -> str:
@@ -98,6 +120,41 @@ def _fallback_next_links(raw_links: list[dict]) -> list[str]:
     return picks
 
 
+def _fallback_keyword(query: str) -> str:
+    text = re.sub(r"\s+", " ", str(query or "")).strip()
+    if not text:
+        return "sports match live stream"
+    if not re.search(r"\b(live|stream|watch|free)\b", text, re.IGNORECASE):
+        text = f"{text} live stream"
+    if len(text) <= _MATCH_LIMIT:
+        return text
+    return text[:_MATCH_LIMIT].rsplit(" ", 1)[0].strip() or text[:_MATCH_LIMIT]
+
+
+def _fallback_next_keyword(query: str, previous_keywords: list[str]) -> str:
+    previous = {str(keyword or "").strip().lower() for keyword in previous_keywords}
+    base = re.sub(r"\s+", " ", str(query or "")).strip() or "sports match"
+    for template in _KEYWORD_VARIANTS:
+        candidate = template.format(query=base).strip()
+        if candidate.lower() not in previous:
+            return _clip(candidate, _MATCH_LIMIT)
+    return _clip(f"{base} live stream alternative {len(previous_keywords) + 1}", _MATCH_LIMIT)
+
+
+def _fallback_search_filter(results: list[dict]) -> list[str]:
+    picks: list[str] = []
+    for result in results:
+        url = str(result.get("url", "")).strip()
+        title = str(result.get("title", "")).strip()
+        if not url:
+            continue
+        if _official_domain_hint(url):
+            continue
+        if _looks_suspicious(url, title) and url not in picks:
+            picks.append(url)
+    return picks
+
+
 def _fallback_node_verdict(page_data: dict) -> dict:
     url = page_data.get("url", "")
     title = page_data.get("title", "")
@@ -141,6 +198,58 @@ def _fallback_error_verdict(error_data: dict) -> dict:
 class LLM:
     def __init__(self, model: Model) -> None:
         self._model = model
+
+    def make_keyword(self, query: str) -> str:
+        query_text = _clip(query, 420)
+        payload = prompts.KEYWORD_USER.format(query=query_text)
+        try:
+            raw = self._model.call(prompts.KEYWORD_SYSTEM, payload, operation="make_keyword")
+            clean = re.sub(r"```[a-z]*|```", "", raw).strip()
+            data = json.loads(clean)
+            keyword = re.sub(r"\s+", " ", str(data.get("keyword", "")).strip())
+            return keyword[:_MATCH_LIMIT].strip() or _fallback_keyword(query)
+        except Exception:
+            return _fallback_keyword(query)
+
+    def make_next_keyword(self, query: str, previous_keywords: list[str]) -> str:
+        query_text = _clip(query, 420)
+        previous = json.dumps(
+            [_clip(keyword, _MATCH_LIMIT) for keyword in previous_keywords[-12:]],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        payload = prompts.NEXT_KEYWORD_USER.format(query=query_text, previous_keywords=previous)
+        try:
+            raw = self._model.call(prompts.NEXT_KEYWORD_SYSTEM, payload, operation="make_next_keyword")
+            clean = re.sub(r"```[a-z]*|```", "", raw).strip()
+            data = json.loads(clean)
+            keyword = re.sub(r"\s+", " ", str(data.get("keyword", "")).strip())
+            if keyword and keyword.lower() not in {item.lower() for item in previous_keywords}:
+                return keyword[:_MATCH_LIMIT].strip()
+            return _fallback_next_keyword(query, previous_keywords)
+        except Exception:
+            return _fallback_next_keyword(query, previous_keywords)
+
+    def filter_search_results(self, query: str, keyword: str, results: list[dict]) -> list[str]:
+        allowed_urls = {str(result.get("url", "")).strip() for result in results if str(result.get("url", "")).strip()}
+        payload = prompts.FILTER_SEARCH_RESULTS_USER.format(
+            query=_clip(query, 420),
+            keyword=_clip(keyword, _MATCH_LIMIT),
+            results=_make_search_results(results, count=_MAX_SEARCH_RESULTS_FOR_LLM),
+        )
+        if len(prompts.FILTER_SEARCH_RESULTS_SYSTEM) + len(payload) > LLM_MAX_REQUEST_CHARS:
+            payload = prompts.FILTER_SEARCH_RESULTS_USER.format(
+                query=_clip(query, 220),
+                keyword=_clip(keyword, 90),
+                results=_make_search_results(results, count=10),
+            )
+        try:
+            raw = self._model.call(prompts.FILTER_SEARCH_RESULTS_SYSTEM, payload, operation="filter_search_results")
+            clean = re.sub(r"```[a-z]*|```", "", raw).strip()
+            data = json.loads(clean)
+            return _collect_urls(data.get("suspicious_urls"), allowed_urls)
+        except Exception:
+            return _fallback_search_filter(results)
 
     def _parse_label(self, raw: str) -> dict:
         clean = re.sub(r"```[a-z]*|```", "", raw).strip()

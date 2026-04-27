@@ -2,19 +2,20 @@
 
 `spcrawler` is the Python crawl engine behind the full-stack app.
 
-It searches sports-stream queries, builds a DFS graph of candidate pages, short-circuits known official domains, extracts page evidence, and classifies pages as `official`, `suspicious`, or `clean`.
+It turns a match description into a single search keyword, filters search results down to suspicious candidate pages, builds a DFS graph, short-circuits known official domains, extracts page evidence, and classifies pages as `official`, `suspicious`, or `clean`.
 
 ## Current Behavior
 
-1. Builds seven DDGS search queries from one match string
-2. Collects up to 20 root results per keyword
-3. Deduplicates nodes by canonical URL
-4. Skips known official domains before page scraping
-5. Crawls the remaining graph depth-first
-6. Extracts title, text snippet, outbound links, iframes, and candidate stream URLs
-7. Uses Gemini to classify the page and choose follow-up links
-8. Falls back to local heuristics if Gemini fails
-9. Stops after `MAX_DEPTH = 10` or `MAX_TOTAL_PAGES = 100`
+1. Uses Gemini to summarize the user's match description into one DDGS search keyword
+2. Collects DDGS results for that keyword
+3. Uses Gemini to skip official pages, news, blogs, score pages, and generic sports content before root nodes are created
+4. Deduplicates suspicious root nodes by canonical URL
+5. Skips known official domains before page scraping
+6. Crawls the remaining graph depth-first
+7. Extracts title, text snippet, up to 100 outbound links, iframes, and up to 5 candidate stream URLs
+8. Uses Gemini to classify each page and choose suspicious follow-up links
+9. Falls back to local heuristics if Gemini fails
+10. Stops after `MAX_DEPTH = 10` or `MAX_TOTAL_PAGES = 100`
 
 Candidate stream URLs can come from:
 
@@ -25,7 +26,7 @@ Candidate stream URLs can come from:
 
 ## Source Layout
 
-- `src/instance/scraper.py`: main crawl engine
+- `src/instance/scraper.py`: workflow orchestrator and single-URL `SPCrawler`
 - `src/client/model.py`: Gemini HTTP client
 - `src/client/llm.py`: prompt shaping, parsing, and fallback heuristics
 - `src/client/prompts.py`: classification prompts
@@ -50,7 +51,23 @@ Then run `crawl4ai-setup` once in that Python environment if browser binaries ar
 
 ## Usage
 
-This folder is source-based right now and does not include packaging metadata such as `pyproject.toml` or `setup.py`. Use it through the backend runner or import it from source.
+This folder is a Python package. The backend installs it into its scraper venv in editable mode and starts one Python process per scraper session.
+
+Install the engine package manually when needed:
+
+```powershell
+cd W:\spcrawler\spcrawler
+python -m pip install -e .
+```
+
+The engine runner accepts JSON on stdin with:
+
+- `description`: match/event text used by the LLM to generate keywords
+- `api_key`: Gemini API key
+- `proxy_url`: optional proxy URL
+- `session_id`: backend session id
+
+Use it through the backend runner or import it from source.
 
 If you want to run it directly, execute from `W:\spcrawler\spcrawler` or add that folder to `PYTHONPATH`, then import from `src`:
 
@@ -75,6 +92,18 @@ async def main() -> None:
 
 
 asyncio.run(main())
+```
+
+For dedicated crawling, pass a single URL either as `link` or as the `match` value:
+
+```python
+from src import SPCrawler
+
+crawler = SPCrawler(
+    link="https://example.com/player",
+    api_key="your_gemini_key",
+    proxy_url="",
+)
 ```
 
 ## Snapshot Shape
