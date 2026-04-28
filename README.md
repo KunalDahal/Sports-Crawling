@@ -162,6 +162,57 @@ heroku container:release web --app your-app-name
 - SSE streams (`/api/sessions/{id}/stream`) work on Heroku's standard HTTP routing; long-lived connections are kept alive within Heroku's 55-second idle timeout by the periodic state snapshots the crawler emits.
 - Free-tier dynos sleep after 30 minutes of inactivity; upgrade to a paid dyno for always-on crawl sessions.
 
+## Deploy To DigitalOcean (Droplet)
+
+### Prerequisites
+
+- [Heroku CLI](https://devcenter.heroku.com/articles/heroku-cli) installed and logged in
+- [Docker](https://www.docker.com/) installed and running
+
+### One-Time Setup
+
+```bash
+heroku login
+heroku container:login
+heroku create your-app-name
+```
+
+### Set Environment Variables
+
+```bash
+heroku config:set GEMINI_API_KEY=your-gemini-key --app your-app-name
+
+heroku config:set PROXY_URL=http://your-proxy:port --app your-app-name
+```
+
+### Build & Deploy
+
+```bash
+heroku container:push web --app your-app-name
+heroku container:release web --app your-app-name
+
+heroku open --app your-app-name
+```
+
+### View Logs
+
+```bash
+heroku logs --tail --app your-app-name
+```
+
+### Redeploy After Changes
+
+```bash
+heroku container:push web --app your-app-name
+heroku container:release web --app your-app-name
+```
+
+### Notes
+
+The Droplet runs the same single-container image used for Heroku: the backend serves the API and the built frontend.
+
+For a complete production checklist and hardened setup commands, see [DEPLOY_DIGITALOCEAN.md](DEPLOY_DIGITALOCEAN.md).
+
 ## Session API
 
 Start request:

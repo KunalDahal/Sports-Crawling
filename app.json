@@ -4,11 +4,8 @@
   "keywords": ["go", "react", "python", "crawler", "heroku"],
   "repository": "https://github.com/your-org/spcrawler",
   "website": "https://your-app.example.com",
+  "stack": "container",
   "env": {
-    "ADDR": {
-      "description": "Address the Go backend listens on.",
-      "value": ":8080"
-    },
     "SPCRAWLER_PYTHON": {
       "description": "Python executable used by the backend when it launches the crawl runner.",
       "value": "python3"
@@ -21,8 +18,7 @@
   "formation": {
     "web": {
       "quantity": 1,
-      "size": "basic"
+      "size": "standard-2x"
     }
-  },
-  "stack": "heroku-24"
+  }
 }

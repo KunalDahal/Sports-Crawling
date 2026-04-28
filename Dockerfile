@@ -9,18 +9,19 @@ COPY frontend ./
 RUN npm run build
 
 FROM golang:1.22-bookworm AS go-builder
+WORKDIR /src
+COPY backend ./backend
 WORKDIR /src/backend
-COPY backend ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spcrawler-backend ./cmd/server
 
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    ADDR=:8080 \
     STATIC_DIR=/app/frontend/dist \
     SPCRAWLER_PYTHON=python3 \
-    SPCRAWLER_RUNNER=/app/backend/scripts/run_scraper.py
+    SPCRAWLER_RUNNER=/app/backend/scripts/run_scraper.py \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
