@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	addr := getenv("ADDR", ":8080")
+	addr := resolveAddr()
 	staticDir := os.Getenv("STATIC_DIR")
 	manager := sessions.NewManager()
 	defer manager.Shutdown()
@@ -28,11 +28,14 @@ func main() {
 	}
 }
 
-func getenv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+func resolveAddr() string {
+	if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+		return ":" + port
 	}
-	return fallback
+	if addr := strings.TrimSpace(os.Getenv("ADDR")); addr != "" {
+		return addr
+	}
+	return ":8080"
 }
 
 func withCORS(next http.Handler) http.Handler {

@@ -18,7 +18,6 @@ FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    ADDR=:8080 \
     STATIC_DIR=/app/frontend/dist \
     SPCRAWLER_PYTHON=python3 \
     SPCRAWLER_RUNNER=/app/backend/scripts/run_scraper.py
