@@ -164,17 +164,50 @@ heroku container:release web --app your-app-name
 
 ## Deploy To DigitalOcean (Droplet)
 
-1. Create a Droplet (Ubuntu 22.04+ recommended) with ports `22`, `80`, and `443` allowed.
-2. SSH into the Droplet.
-3. Install Docker Engine + Compose plugin.
-4. Clone this repository.
-5. Run:
+### Prerequisites
+
+- [Heroku CLI](https://devcenter.heroku.com/articles/heroku-cli) installed and logged in
+- [Docker](https://www.docker.com/) installed and running
+
+### One-Time Setup
 
 ```bash
-docker compose up -d --build
+heroku login
+heroku container:login
+heroku create your-app-name
 ```
 
-6. Visit `http://<droplet-ip>`.
+### Set Environment Variables
+
+```bash
+heroku config:set GEMINI_API_KEY=your-gemini-key --app your-app-name
+
+heroku config:set PROXY_URL=http://your-proxy:port --app your-app-name
+```
+
+### Build & Deploy
+
+```bash
+heroku container:push web --app your-app-name
+heroku container:release web --app your-app-name
+
+heroku open --app your-app-name
+```
+
+### View Logs
+
+```bash
+heroku logs --tail --app your-app-name
+```
+
+### Redeploy After Changes
+
+```bash
+heroku container:push web --app your-app-name
+heroku container:release web --app your-app-name
+```
+
+### Notes
 
 The Droplet runs the same single-container image used for Heroku: the backend serves the API and the built frontend.
 
@@ -188,7 +221,6 @@ Start request:
 {
   "match": "CSK vs GT IPL 2026",
   "api_key": "your-gemini-key",
-  "proxy_url": ""
 }
 ```
 
