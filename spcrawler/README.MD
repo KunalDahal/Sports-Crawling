@@ -17,6 +17,8 @@ It turns a match description into a single search keyword, filters search result
 9. Falls back to local heuristics if Gemini fails
 10. Stops after `MAX_DEPTH = 10` or `MAX_TOTAL_PAGES = 100`
 
+In the single-container runtime, the backend launches the Python runner from the same image and serves the built frontend from the same origin.
+
 Candidate stream URLs can come from:
 
 - page HTML
@@ -51,7 +53,7 @@ Then run `crawl4ai-setup` once in that Python environment if browser binaries ar
 
 ## Usage
 
-This folder is a Python package. The backend installs it into its scraper venv in editable mode and starts one Python process per scraper session.
+This folder is a Python package. The backend installs it into its scraper venv in editable mode and starts one Python process per scraper session. The production Docker image also installs it into the runtime image so the backend can invoke the runner without a separate crawler container.
 
 Install the engine package manually when needed:
 
@@ -145,7 +147,7 @@ Each node includes:
 
 ## Related Files
 
-- [src/instance/scraper.py](/W:/spcrawler/spcrawler/src/instance/scraper.py)
-- [src/client/llm.py](/W:/spcrawler/spcrawler/src/client/llm.py)
-- [src/client/model.py](/W:/spcrawler/spcrawler/src/client/model.py)
-- [src/utils/constants.py](/W:/spcrawler/spcrawler/src/utils/constants.py)
+- [src/instance/scraper.py](src/instance/scraper.py)
+- [src/client/llm.py](src/client/llm.py)
+- [src/client/model.py](src/client/model.py)
+- [src/utils/constants.py](src/utils/constants.py)

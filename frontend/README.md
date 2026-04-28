@@ -15,7 +15,7 @@ React control room for live `spcrawler` sessions.
 ## Run
 
 ```powershell
-cd W:\spcrawler\frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -29,13 +29,17 @@ $env:VITE_API_BASE="http://127.0.0.1:8090"
 npm run dev
 ```
 
+In production Docker and Heroku deployments, the built frontend is served by the Go backend from the same origin, so `VITE_API_BASE` is not needed there.
+
 ## Build
 
 ```powershell
-cd W:\spcrawler\frontend
+cd frontend
 npm run build
 npm run preview
 ```
+
+The root Docker image runs this build automatically and copies the generated `dist` folder into the runtime image.
 
 ## Session Flow
 
@@ -55,7 +59,7 @@ Color meanings:
 
 ## Main Files
 
-- [package.json](/W:/spcrawler/frontend/package.json)
-- [src/main.jsx](/W:/spcrawler/frontend/src/main.jsx)
-- [src/graph-logic.js](/W:/spcrawler/frontend/src/graph-logic.js)
-- [src/styles.css](/W:/spcrawler/frontend/src/styles.css)
+- [package.json](package.json)
+- [src/main.jsx](src/main.jsx)
+- [src/graph-logic.js](src/graph-logic.js)
+- [src/styles.css](src/styles.css)
