@@ -20,7 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     STATIC_DIR=/app/frontend/dist \
     SPCRAWLER_PYTHON=python3 \
-    SPCRAWLER_RUNNER=/app/backend/scripts/run_scraper.py
+    SPCRAWLER_RUNNER=/app/backend/scripts/run_scraper.py \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
