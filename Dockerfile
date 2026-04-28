@@ -36,4 +36,4 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 
 EXPOSE 8080
 
-CMD ["spcrawler-backend"]
+CMD ["sh", "-c", "ADDR=:${PORT:-8080} spcrawler-backend"]
