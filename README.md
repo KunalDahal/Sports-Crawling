@@ -6,6 +6,18 @@
 - `backend`: a Go API that manages sessions and streams state updates over SSE
 - `spcrawler`: the Python crawl engine that searches, crawls, classifies, and expands suspicious pages
 
+## Google Solutions Challenge
+
+We are making this project for [Google Solutions Challenge](https://hack2skill.com/) — Topic: **Digital Asset Protection**
+
+### Protecting the Integrity of Digital Sports Media
+
+Sports organizations generate massive volumes of high-value digital media that rapidly scatter across global platforms, making it nearly impossible to track. This vast visibility gap leaves proprietary content highly vulnerable to widespread digital misappropriation, unauthorized redistribution, and intellectual property violations.
+
+#### Objective
+
+Develop a scalable, innovative solution to identify, track, and flag unauthorized use or misappropriation of official sports media across the internet. Enable organizations to proactively authenticate their digital assets and detect anomalies in content propagation in near real-time.
+
 ## What It Does
 
 1. Accepts a match string such as `CSK vs GT IPL 2026`
