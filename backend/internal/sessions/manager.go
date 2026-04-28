@@ -245,6 +245,13 @@ func (m *Manager) Shutdown() {
 }
 
 func (m *Manager) resolveVenvPython() (string, error) {
+	if python := strings.TrimSpace(os.Getenv("SPCRAWLER_PYTHON")); python != "" {
+		if _, err := exec.LookPath(python); err != nil {
+			return "", fmt.Errorf("SPCRAWLER_PYTHON is not executable: %w", err)
+		}
+		return python, nil
+	}
+
 	m.venvMu.Lock()
 	defer m.venvMu.Unlock()
 
@@ -536,6 +543,25 @@ func (s *Session) broadcastLocked(state State) {
 }
 
 func runnerPath() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("SPCRAWLER_RUNNER")); override != "" {
+		if filepath.IsAbs(override) {
+			return override, nil
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Clean(filepath.Join(cwd, override)), nil
+	}
+
+	exe, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Clean(filepath.Join(filepath.Dir(exe), "..", "backend", "scripts", "run_scraper.py"))
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate, nil
+		}
+	}
+
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return "", errors.New("could not locate backend source")

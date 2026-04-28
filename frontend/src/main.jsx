@@ -3,7 +3,8 @@ import { createRoot } from "react-dom/client";
 import { buildGraph, fitViewport } from "./graph-logic.js";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+const configuredApiBase = (import.meta.env.VITE_API_BASE || "").trim().replace(/\/$/, "");
+const API_BASE = configuredApiBase || (import.meta.env.DEV ? "http://localhost:8080" : "");
 
 const emptyForm = {
   description: "",

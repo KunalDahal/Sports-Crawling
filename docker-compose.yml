@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: spcrawler-backend:latest
+    container_name: spcrawler-backend
+    restart: unless-stopped
+    environment:
+      ADDR: :8080
+      SPCRAWLER_PYTHON: python3
+      SPCRAWLER_RUNNER: /app/backend/scripts/run_scraper.py
+    expose:
+      - "8080"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: spcrawler-frontend:latest
+    container_name: spcrawler-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
