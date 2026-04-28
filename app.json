@@ -4,11 +4,7 @@
   "keywords": ["go", "react", "python", "crawler", "heroku"],
   "repository": "https://github.com/your-org/spcrawler",
   "website": "https://your-app.example.com",
-  "buildpacks": [
-    {
-      "url": "heroku/docker"
-    }
-  ],
+  "stack": "container",
   "env": {
     "ADDR": {
       "description": "Address the Go backend listens on.",
@@ -28,6 +24,5 @@
       "quantity": 1,
       "size": "basic"
     }
-  },
-  "stack": "heroku-24"
+  }
 }
