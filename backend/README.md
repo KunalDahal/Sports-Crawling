@@ -11,12 +11,12 @@ Go session manager for the Python `spcrawler` crawler.
 - streams live state updates over SSE
 - stops or removes sessions without restarting the server
 
-The backend is intentionally thin. Crawl logic lives in `W:\spcrawler\spcrawler\src`.
+The backend is intentionally thin. Crawl logic lives in the Python package under `spcrawler/src`.
 
 ## Run
 
 ```powershell
-cd W:\spcrawler\backend
+cd backend
 go run .\cmd\server
 ```
 
@@ -32,6 +32,8 @@ Override it with:
 $env:ADDR=":8090"
 go run .\cmd\server
 ```
+
+When `STATIC_DIR` is set, the server also serves the built frontend from that directory. That is how the single-container Docker and Heroku deployments work.
 
 ## API
 
@@ -74,10 +76,12 @@ Start request body:
 
 If `crawl4ai` browser binaries are not installed yet, activate `backend\scripts\.venv` and run `crawl4ai-setup` once.
 
+In Docker or Heroku, the image installs Python dependencies and browser binaries during the build step, so you do not need to run those manually.
+
 ## Related Files
 
-- [cmd/server/main.go](/W:/spcrawler/backend/cmd/server/main.go)
-- [internal/sessions/http.go](/W:/spcrawler/backend/internal/sessions/http.go)
-- [internal/sessions/manager.go](/W:/spcrawler/backend/internal/sessions/manager.go)
-- [scripts/run_scraper.py](/W:/spcrawler/backend/scripts/run_scraper.py)
-- [scripts/requirements.txt](/W:/spcrawler/backend/scripts/requirements.txt)
+- [cmd/server/main.go](cmd/server/main.go)
+- [internal/sessions/http.go](internal/sessions/http.go)
+- [internal/sessions/manager.go](internal/sessions/manager.go)
+- [scripts/run_scraper.py](scripts/run_scraper.py)
+- [scripts/requirements.txt](scripts/requirements.txt)

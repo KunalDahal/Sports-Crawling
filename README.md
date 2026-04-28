@@ -6,6 +6,18 @@
 - `backend`: a Go API that manages sessions and streams state updates over SSE
 - `spcrawler`: the Python crawl engine that searches, crawls, classifies, and expands suspicious pages
 
+## Google Solutions Challenge
+
+We are making this project for [Google Solutions Challenge](https://hack2skill.com/) — Topic: **Digital Asset Protection**
+
+### Protecting the Integrity of Digital Sports Media
+
+Sports organizations generate massive volumes of high-value digital media that rapidly scatter across global platforms, making it nearly impossible to track. This vast visibility gap leaves proprietary content highly vulnerable to widespread digital misappropriation, unauthorized redistribution, and intellectual property violations.
+
+#### Objective
+
+Develop a scalable, innovative solution to identify, track, and flag unauthorized use or misappropriation of official sports media across the internet. Enable organizations to proactively authenticate their digital assets and detect anomalies in content propagation in near real-time.
+
 ## What It Does
 
 1. Accepts a match string such as `CSK vs GT IPL 2026`
@@ -27,6 +39,7 @@ If Gemini calls fail, the crawler falls back to local heuristics so a session ca
 - Crawler: Python + `crawl4ai` + `ddgs` + `requests`
 - Streaming: Server-Sent Events
 - LLM: Google Gemini `gemini-2.5-flash-lite`
+- Production Docker/Heroku: one container serves the API and the built frontend together
 
 ## Prerequisites
 
@@ -75,20 +88,19 @@ The backend creates `backend\scripts\.venv` and installs `backend\scripts\requir
 
 ## Docker Run
 
-Build and run the full stack from the repository root:
+Build and run the single production container from the repository root:
 
 ```powershell
 docker compose up -d --build
 ```
 
-The frontend is exposed on port `80` and proxies API/SSE traffic to the backend internally.
+The container serves the built frontend and the API on the same origin. Port `80` on the host maps to port `8080` in the container.
 
 Useful commands:
 
 ```powershell
 docker compose ps
-docker compose logs -f backend
-docker compose logs -f frontend
+docker compose logs -f web
 docker compose down
 ```
 
@@ -105,6 +117,8 @@ docker compose up -d --build
 ```
 
 6. Visit `http://<droplet-ip>`.
+
+The Droplet runs the same single-container image used for Heroku: the backend serves the API and the built frontend.
 
 For a complete production checklist and hardened setup commands, see [DEPLOY_DIGITALOCEAN.md](DEPLOY_DIGITALOCEAN.md).
 
@@ -139,6 +153,10 @@ Each streamed event is emitted as SSE `event: state` with the full session snaps
 ```text
 spcrawler/
 |-- README.md
+|-- Dockerfile
+|-- docker-compose.yml
+|-- app.json
+|-- heroku.yml
 |-- start.ps1
 |-- backend/
 |   |-- README.md
@@ -158,11 +176,12 @@ spcrawler/
 
 - The UI uses `/api/sessions/{id}/stream`.
 - The backend also accepts `/api/sessions/{id}/events` for compatibility.
+- In production, the backend serves the built frontend from the same container when `STATIC_DIR` is set.
 - Official domains are short-circuited before page scraping.
 - Suspicious pages can expose direct stream URLs from page HTML, iframes, discovered links, or captured network requests.
 
 ## Docs
 
-- [backend/README.md](/W:/spcrawler/backend/README.md)
-- [frontend/README.md](/W:/spcrawler/frontend/README.md)
-- [spcrawler/README.MD](/W:/spcrawler/spcrawler/README.MD)
+- [backend/README.md](backend/README.md)
+- [frontend/README.md](frontend/README.md)
+- [spcrawler/README.MD](spcrawler/README.MD)
