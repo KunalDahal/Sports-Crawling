@@ -170,7 +170,6 @@ Start request:
 {
   "match": "CSK vs GT IPL 2026",
   "api_key": "your-gemini-key",
-  "proxy_url": ""
 }
 ```
 
