@@ -4,7 +4,7 @@ React control room for live `spcrawler` sessions.
 
 ## What The UI Does
 
-- starts a crawl with `match`, `api_key`, and optional `proxy_url`
+- starts a crawl with `match` and `api_key`
 - lists recent in-memory sessions from the backend
 - subscribes to live state updates over SSE
 - renders the crawl as a zoomable DFS graph
@@ -43,7 +43,7 @@ The root Docker image runs this build automatically and copies the generated `di
 
 ## Session Flow
 
-1. Submit a match string, Gemini API key, and optional proxy URL.
+1. Submit a match string and Gemini API key.
 2. The frontend sends `POST /api/sessions`.
 3. It fetches `GET /api/sessions/{id}/state` for the initial snapshot.
 4. It listens to `GET /api/sessions/{id}/stream` for live SSE updates.

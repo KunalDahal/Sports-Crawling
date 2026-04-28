@@ -9,7 +9,6 @@ const API_BASE = configuredApiBase || (import.meta.env.DEV ? "http://localhost:8
 const emptyForm = {
   description: "",
   api_key: "",
-  proxy_url: "",
 };
 
 function App() {
@@ -179,11 +178,6 @@ function App() {
               value={form.api_key}
               onChange={(e) => setForm({ ...form, api_key: e.target.value })}
               placeholder="Gemini API key"
-            />
-            <input
-              value={form.proxy_url}
-              onChange={(e) => setForm({ ...form, proxy_url: e.target.value })}
-              placeholder="Proxy"
             />
             <button disabled={busy}>{busy ? "Starting" : "Start"}</button>
           </form>
