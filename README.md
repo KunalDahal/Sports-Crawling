@@ -1,5 +1,9 @@
 # spcrawler
 
+[![Deploy Status](https://img.shields.io/badge/heroku-deployed-430098?logo=heroku&logoColor=white)](https://your-app-name.herokuapp.com)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://your-app-name.herokuapp.com)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 `spcrawler` is a sports-stream investigation workspace with three parts:
 
 - `frontend`: a React/Vite UI for starting sessions and inspecting the live graph
@@ -103,6 +107,60 @@ docker compose ps
 docker compose logs -f web
 docker compose down
 ```
+
+## Deploy To Heroku
+
+The app ships as a single Docker container that serves both the Go API and the built React frontend.
+
+### Prerequisites
+
+- [Heroku CLI](https://devcenter.heroku.com/articles/heroku-cli) installed and logged in
+- [Docker](https://www.docker.com/) installed and running
+
+### One-Time Setup
+
+```bash
+heroku login
+heroku container:login
+heroku create your-app-name
+```
+
+### Set Environment Variables
+
+```bash
+heroku config:set GEMINI_API_KEY=your-gemini-key --app your-app-name
+
+heroku config:set PROXY_URL=http://your-proxy:port --app your-app-name
+```
+
+### Build & Deploy
+
+```bash
+heroku container:push web --app your-app-name
+heroku container:release web --app your-app-name
+
+heroku open --app your-app-name
+```
+
+### View Logs
+
+```bash
+heroku logs --tail --app your-app-name
+```
+
+### Redeploy After Changes
+
+```bash
+heroku container:push web --app your-app-name
+heroku container:release web --app your-app-name
+```
+
+### Notes
+
+- Heroku assigns a dynamic `PORT` at runtime. The Go server reads `os.Getenv("PORT")` and falls back to `8080` for local use.
+- The `heroku.yml` at the repository root tells Heroku to build the `web` dyno from the `Dockerfile`.
+- SSE streams (`/api/sessions/{id}/stream`) work on Heroku's standard HTTP routing; long-lived connections are kept alive within Heroku's 55-second idle timeout by the periodic state snapshots the crawler emits.
+- Free-tier dynos sleep after 30 minutes of inactivity; upgrade to a paid dyno for always-on crawl sessions.
 
 ## Deploy To DigitalOcean (Droplet)
 
