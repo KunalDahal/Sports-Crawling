@@ -11,7 +11,8 @@ RUN npm run build
 FROM golang:1.22-bookworm AS go-builder
 WORKDIR /src
 COPY backend ./backend
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spcrawler-backend ./backend/cmd/server
+WORKDIR /src/backend
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spcrawler-backend ./cmd/server
 
 FROM python:3.11-slim-bookworm
 
