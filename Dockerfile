@@ -20,7 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ADDR=:8080 \
     STATIC_DIR=/app/frontend/dist \
     SPCRAWLER_PYTHON=python3 \
-    SPCRAWLER_RUNNER=/app/backend/scripts/run_scraper.py
+    SPCRAWLER_RUNNER=/app/backend/scripts/run_scraper.py \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
@@ -32,7 +33,8 @@ COPY --from=frontend-builder /src/frontend/dist ./frontend/dist
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r /app/backend/scripts/requirements.txt \
     && python -m pip install --no-cache-dir -e /app/spcrawler \
-    && python -m playwright install --with-deps chromium
+    && python -m playwright install --with-deps chromium \
+    && mkdir -p /ms-playwright && chmod -R 777 /ms-playwright 
 
 EXPOSE 8080
 
