@@ -20,10 +20,12 @@ import (
 )
 
 type StartRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	Match     string `json:"match"`
-	APIKey    string `json:"api_key"`
-	ProxyURL  string `json:"proxy_url"`
+	SessionID   string `json:"session_id,omitempty"`
+	Description string `json:"description,omitempty"`
+	Match       string `json:"match"`
+	Link        string `json:"link,omitempty"`
+	APIKey      string `json:"api_key"`
+	ProxyURL    string `json:"proxy_url"`
 }
 
 type Link struct {
@@ -32,9 +34,29 @@ type Link struct {
 }
 
 type Keyword struct {
-	ID            string `json:"id"`
-	Query         string `json:"query"`
-	SearchResults int    `json:"search_results"`
+	ID            string        `json:"id"`
+	Query         string        `json:"query"`
+	SearchResults int           `json:"search_results"`
+	Status        string        `json:"status,omitempty"`
+	StartedAt     string        `json:"started_at,omitempty"`
+	FinishedAt    string        `json:"finished_at,omitempty"`
+	RootIDs       []string      `json:"root_ids,omitempty"`
+	NodeIDs       []string      `json:"node_ids,omitempty"`
+	Stats         KeywordStats  `json:"stats,omitempty"`
+	Result        KeywordResult `json:"result,omitempty"`
+}
+
+type KeywordStats struct {
+	Roots      int `json:"roots"`
+	Visited    int `json:"visited"`
+	Official   int `json:"official"`
+	Suspicious int `json:"suspicious"`
+	Clean      int `json:"clean"`
+}
+
+type KeywordResult struct {
+	NodeIDs []string     `json:"node_ids,omitempty"`
+	Stats   KeywordStats `json:"stats,omitempty"`
 }
 
 type Node struct {
@@ -67,18 +89,19 @@ type Stats struct {
 }
 
 type State struct {
-	SessionID     string    `json:"session_id"`
-	Match         string    `json:"match"`
-	Status        string    `json:"status"`
-	Message       string    `json:"message"`
-	Error         string    `json:"error"`
-	StartedAt     string    `json:"started_at"`
-	FinishedAt    string    `json:"finished_at"`
-	CurrentNodeID string    `json:"current_node_id"`
-	CurrentURL    string    `json:"current_url"`
-	Keywords      []Keyword `json:"keywords"`
-	Nodes         []Node    `json:"nodes"`
-	Stats         Stats     `json:"stats"`
+	SessionID       string    `json:"session_id"`
+	Match           string    `json:"match"`
+	Status          string    `json:"status"`
+	Message         string    `json:"message"`
+	Error           string    `json:"error"`
+	StartedAt       string    `json:"started_at"`
+	FinishedAt      string    `json:"finished_at"`
+	CurrentNodeID   string    `json:"current_node_id"`
+	CurrentURL      string    `json:"current_url"`
+	ActiveKeywordID string    `json:"active_keyword_id"`
+	Keywords        []Keyword `json:"keywords"`
+	Nodes           []Node    `json:"nodes"`
+	Stats           Stats     `json:"stats"`
 }
 
 type Summary struct {
@@ -120,9 +143,17 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Start(req StartRequest) (*Summary, error) {
+	req.Description = strings.TrimSpace(req.Description)
 	req.Match = strings.TrimSpace(req.Match)
+	req.Link = strings.TrimSpace(req.Link)
 	if req.Match == "" {
-		return nil, errors.New("match is required")
+		req.Match = req.Description
+	}
+	if req.Match == "" && req.Link == "" {
+		return nil, errors.New("description or link is required")
+	}
+	if req.Match == "" {
+		req.Match = req.Link
 	}
 
 	python, err := m.resolveVenvPython()
@@ -214,6 +245,13 @@ func (m *Manager) Shutdown() {
 }
 
 func (m *Manager) resolveVenvPython() (string, error) {
+	if python := strings.TrimSpace(os.Getenv("SPCRAWLER_PYTHON")); python != "" {
+		if _, err := exec.LookPath(python); err != nil {
+			return "", fmt.Errorf("SPCRAWLER_PYTHON is not executable: %w", err)
+		}
+		return python, nil
+	}
+
 	m.venvMu.Lock()
 	defer m.venvMu.Unlock()
 
@@ -243,34 +281,47 @@ func ensureVenv() (string, error) {
 	venvDir := filepath.Join(scriptsDir, ".venv")
 	pythonBin := venvPythonBin(venvDir)
 
+	created := false
 	if _, statErr := os.Stat(pythonBin); statErr == nil {
 		log.Printf("spcrawler: reusing existing venv at %s", venvDir)
-		return pythonBin, nil
-	}
+	} else {
+		sysPython, err := findSystemPython()
+		if err != nil {
+			return "", fmt.Errorf("no usable Python found: %w", err)
+		}
+		log.Printf("spcrawler: creating venv at %s using %s", venvDir, sysPython)
 
-	sysPython, err := findSystemPython()
-	if err != nil {
-		return "", fmt.Errorf("no usable Python found: %w", err)
+		if out, runErr := runCmd(sysPython, "-m", "venv", venvDir); runErr != nil {
+			return "", fmt.Errorf("venv creation failed: %w\n%s", runErr, out)
+		}
+		created = true
+		log.Printf("spcrawler: venv created")
 	}
-	log.Printf("spcrawler: creating venv at %s using %s", venvDir, sysPython)
-
-	if out, runErr := runCmd(sysPython, "-m", "venv", venvDir); runErr != nil {
-		return "", fmt.Errorf("venv creation failed: %w\n%s", runErr, out)
-	}
-	log.Printf("spcrawler: venv created")
 
 	if out, runErr := runCmd(pythonBin, "-m", "pip", "install", "--quiet", "--upgrade", "pip"); runErr != nil {
 		log.Printf("spcrawler: pip upgrade warning: %s", out)
 	}
 
 	reqFile := filepath.Join(scriptsDir, "requirements.txt")
-	if _, statErr := os.Stat(reqFile); statErr == nil {
-		log.Printf("spcrawler: installing %s", reqFile)
-		out, runErr := runCmd(pythonBin, "-m", "pip", "install", "--quiet", "-r", reqFile)
-		if runErr != nil {
-			return "", fmt.Errorf("pip install failed: %w\n%s", runErr, out)
+	if created {
+		if _, statErr := os.Stat(reqFile); statErr == nil {
+			log.Printf("spcrawler: installing %s", reqFile)
+			out, runErr := runCmd(pythonBin, "-m", "pip", "install", "--quiet", "-r", reqFile)
+			if runErr != nil {
+				return "", fmt.Errorf("pip install failed: %w\n%s", runErr, out)
+			}
+			log.Printf("spcrawler: requirements installed")
 		}
-		log.Printf("spcrawler: requirements installed")
+	}
+
+	engineDir := filepath.Clean(filepath.Join(scriptsDir, "..", "..", "spcrawler"))
+	if _, statErr := os.Stat(filepath.Join(engineDir, "pyproject.toml")); statErr == nil {
+		log.Printf("spcrawler: installing engine package from %s", engineDir)
+		out, runErr := runCmd(pythonBin, "-m", "pip", "install", "--quiet", "--editable", engineDir)
+		if runErr != nil {
+			return "", fmt.Errorf("engine install failed: %w\n%s", runErr, out)
+		}
+		log.Printf("spcrawler: engine package installed")
 	}
 
 	return pythonBin, nil
@@ -492,6 +543,25 @@ func (s *Session) broadcastLocked(state State) {
 }
 
 func runnerPath() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("SPCRAWLER_RUNNER")); override != "" {
+		if filepath.IsAbs(override) {
+			return override, nil
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Clean(filepath.Join(cwd, override)), nil
+	}
+
+	exe, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Clean(filepath.Join(filepath.Dir(exe), "..", "backend", "scripts", "run_scraper.py"))
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate, nil
+		}
+	}
+
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return "", errors.New("could not locate backend source")

@@ -9,11 +9,11 @@
 ## What It Does
 
 1. Accepts a match string such as `CSK vs GT IPL 2026`
-2. Builds multiple DDGS search queries around that match
-3. Creates root nodes from search results
-4. Marks known official broadcaster and league domains immediately from hostname hints
-5. Crawls non-official pages with DFS
-6. Extracts summaries, outbound links, iframes, and candidate stream URLs
+2. Uses Gemini to summarize that description into one DDGS search keyword
+3. Uses DDGS to return multiple links for that keyword
+4. Uses Gemini to skip official pages, news articles, blogs, score pages, and generic sports content before root nodes are created
+5. Crawls only suspicious root pages with DFS
+6. Extracts summaries, up to 100 outbound links, iframes, and up to 5 candidate stream URLs
 7. Uses Gemini to classify each page as `official`, `suspicious`, or `clean`
 8. Lets the model choose which suspicious child links should be explored next
 9. Streams full state snapshots to the frontend
@@ -72,6 +72,41 @@ npm run dev
 ```
 
 The backend creates `backend\scripts\.venv` and installs `backend\scripts\requirements.txt` the first time you start a crawl. If `crawl4ai` browser binaries are missing, open that venv and run `crawl4ai-setup` once.
+
+## Docker Run
+
+Build and run the full stack from the repository root:
+
+```powershell
+docker compose up -d --build
+```
+
+The frontend is exposed on port `80` and proxies API/SSE traffic to the backend internally.
+
+Useful commands:
+
+```powershell
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f frontend
+docker compose down
+```
+
+## Deploy To DigitalOcean (Droplet)
+
+1. Create a Droplet (Ubuntu 22.04+ recommended) with ports `22`, `80`, and `443` allowed.
+2. SSH into the Droplet.
+3. Install Docker Engine + Compose plugin.
+4. Clone this repository.
+5. Run:
+
+```bash
+docker compose up -d --build
+```
+
+6. Visit `http://<droplet-ip>`.
+
+For a complete production checklist and hardened setup commands, see [DEPLOY_DIGITALOCEAN.md](DEPLOY_DIGITALOCEAN.md).
 
 ## Session API
 

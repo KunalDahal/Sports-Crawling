@@ -1,0 +1,28 @@
+{
+  "name": "spcrawler",
+  "description": "Sports-stream investigation workspace with a Go API, React frontend, and Python crawl engine.",
+  "keywords": ["go", "react", "python", "crawler", "heroku"],
+  "repository": "https://github.com/your-org/spcrawler",
+  "website": "https://your-app.example.com",
+  "env": {
+    "ADDR": {
+      "description": "Address the Go backend listens on.",
+      "value": ":8080"
+    },
+    "SPCRAWLER_PYTHON": {
+      "description": "Python executable used by the backend when it launches the crawl runner.",
+      "value": "python3"
+    },
+    "SPCRAWLER_RUNNER": {
+      "description": "Path to the Python runner script used by the backend.",
+      "value": "backend/scripts/run_scraper.py"
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "stack": "heroku-24"
+}

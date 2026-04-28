@@ -4,12 +4,13 @@ const V_GAP = 118;
 const PAD_X = 100;
 const PAD_Y = 96;
 
-export function buildGraph(state, summary) {
+export function buildGraph(state, summary, keywordId = "") {
   const selectionMap = new Map();
   const nodeMap = new Map();
   const childMap = new Map();
   const roots = ["session"];
-  const sessionKey = state?.session_id || summary?.id || "session";
+  const selectedKeywordId = keywordId || state?.active_keyword_id || "";
+  const sessionKey = `${state?.session_id || summary?.id || "session"}:${selectedKeywordId || "all"}`;
 
   const rootDetail = {
     kind: "session",
@@ -20,6 +21,7 @@ export function buildGraph(state, summary) {
     error: state?.error || summary?.last_error || "",
     currentUrl: state?.current_url || summary?.current_url || "",
     keywords: state?.keywords || [],
+    selectedKeywordId,
     stats: state?.stats || {
       keywords: summary?.keywords || 0,
       roots: summary?.roots || 0,
@@ -41,11 +43,15 @@ export function buildGraph(state, summary) {
   selectionMap.set("session", rootDetail);
 
   const pageIds = new Set();
-  for (const node of state?.nodes || []) {
+  const visibleNodes = selectedKeywordId
+    ? (state?.nodes || []).filter((node) => node.keyword_id === selectedKeywordId)
+    : (state?.nodes || []);
+
+  for (const node of visibleNodes) {
     pageIds.add(node.id);
   }
 
-  for (const node of state?.nodes || []) {
+  for (const node of visibleNodes) {
     const detail = { kind: "page", ...node };
     const parentId = pageIds.has(node.parent_id) ? node.parent_id : "session";
     const label = hostname(node.url);

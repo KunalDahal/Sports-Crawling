@@ -3,10 +3,11 @@ import { createRoot } from "react-dom/client";
 import { buildGraph, fitViewport } from "./graph-logic.js";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+const configuredApiBase = (import.meta.env.VITE_API_BASE || "").trim().replace(/\/$/, "");
+const API_BASE = configuredApiBase || (import.meta.env.DEV ? "http://localhost:8080" : "");
 
 const emptyForm = {
-  match: "",
+  description: "",
   api_key: "",
   proxy_url: "",
 };
@@ -17,6 +18,7 @@ function App() {
   const [activeId, setActiveId] = useState("");
   const [state, setState] = useState(null);
   const [selectedId, setSelectedId] = useState("");
+  const [selectedKeywordId, setSelectedKeywordId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -30,11 +32,13 @@ function App() {
     if (!activeId) {
       setState(null);
       setSelectedId("");
+      setSelectedKeywordId("");
       return undefined;
     }
 
     let closed = false;
     setSelectedId("");
+    setSelectedKeywordId("");
 
     fetch(`${API_BASE}/api/sessions/${activeId}/state`)
       .then((res) => (res.ok ? res.json() : null))
@@ -92,7 +96,8 @@ function App() {
       if (!res.ok) throw new Error(data.error || "Could not start crawl");
       setActiveId(data.id);
       setSelectedId("");
-      setForm((current) => ({ ...current, match: "" }));
+      setSelectedKeywordId("");
+      setForm((current) => ({ ...current, description: "" }));
       await refreshSessions();
     } catch (err) {
       setError(err.message);
@@ -122,23 +127,30 @@ function App() {
       setActiveId(next[0]?.id || "");
       setState(null);
       setSelectedId("");
+      setSelectedKeywordId("");
     }
   }
 
   const active = sessions.find((session) => session.id === activeId) || null;
-  const graph = useMemo(() => buildGraph(state, active), [state, active]);
+  useEffect(() => {
+    const keywords = state?.keywords || [];
+    if (!keywords.length) {
+      setSelectedKeywordId("");
+      return;
+    }
+    setSelectedKeywordId((current) => {
+      if (state?.active_keyword_id && keywords.some((keyword) => keyword.id === state.active_keyword_id)) {
+        return state.active_keyword_id;
+      }
+      if (current && keywords.some((keyword) => keyword.id === current)) return current;
+      return keywords[0].id;
+    });
+  }, [state?.session_id, state?.active_keyword_id, state?.keywords?.length]);
+
+  const graph = useMemo(() => buildGraph(state, active, selectedKeywordId), [state, active, selectedKeywordId]);
   const selected = selectedId ? graph.selectionMap.get(selectedId) || null : null;
-  const currentNode = useMemo(() => {
-    if (!state?.current_node_id || !Array.isArray(state?.nodes)) return null;
-    return state.nodes.find((node) => node.id === state.current_node_id) || null;
-  }, [state]);
-  const liveDepth = Number.isInteger(currentNode?.depth) ? currentNode.depth : "-";
-  const liveUrl = state?.current_url || currentNode?.url || "-";
-  const liveStatus = currentNode && !currentNode.visited
-    ? state?.message || currentNode?.reason || "-"
-    : currentNode?.reason || state?.message || "-";
-  const liveNodeLabel = currentNode?.id || "-";
-  const liveError = error || state?.error || (currentNode?.status === "error" ? currentNode?.reason : "") || "-";
+  const statusText = active?.status || state?.status || "waiting";
+  const statusMessage = error || state?.error || state?.message || "Ready";
 
   useEffect(() => {
     if (selectedId && !graph.selectionMap.has(selectedId)) {
@@ -157,9 +169,9 @@ function App() {
 
           <form className="toolbar-form" onSubmit={startSession}>
             <input
-              value={form.match}
-              onChange={(e) => setForm({ ...form, match: e.target.value })}
-              placeholder="Team A vs Team B"
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              placeholder="Match description for keyword generation"
               required
             />
             <input
@@ -202,7 +214,7 @@ function App() {
         </header>
 
         <div className="summary-row">
-          <Metric label="Status" value={active?.status || state?.status || "waiting"} tone={toneFromStatus(active?.status || state?.status || "idle")} />
+          <Metric label="Status" value={statusText} tone={toneFromStatus(statusText)} />
           <Metric label="Keywords" value={state?.stats?.keywords ?? active?.keywords ?? 0} />
           <Metric label="Roots" value={state?.stats?.roots ?? active?.roots ?? 0} />
           <Metric label="Visited" value={state?.stats?.visited ?? active?.visited ?? 0} />
@@ -211,45 +223,20 @@ function App() {
           <Metric label="Clean" value={state?.stats?.clean ?? active?.clean ?? 0} tone="green" />
         </div>
 
-        <section className="activity-bar">
-          <div className="activity-section">
-            <div className="activity-head">
-              <p className="eyebrow">Live activity</p>
-              <strong>{state?.message || "Waiting"}</strong>
-            </div>
-            <div className="activity-grid">
-              <div className="activity-item">
-                <span>Current node</span>
-                <strong>{liveNodeLabel}</strong>
-              </div>
-              <div className="activity-item">
-                <span>Current depth</span>
-                <strong>{liveDepth}</strong>
-              </div>
-              <div className="activity-item activity-item-wide">
-                <span>Current url</span>
-                <strong>{liveUrl}</strong>
-              </div>
-              <div className="activity-item activity-item-wide">
-                <span>Status</span>
-                <strong>{liveStatus}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="activity-section activity-error-panel">
-            <div className="activity-head">
-              <p className="eyebrow">Error</p>
-              <strong>{liveError === "-" ? "None" : "Active"}</strong>
-            </div>
-            <div className="activity-grid activity-grid-error">
-              <div className="activity-item activity-item-wide">
-                <span>Current error</span>
-                <strong>{liveError}</strong>
-              </div>
-            </div>
-          </div>
+        <section className={`status-band status-${toneFromStatus(statusText)}`}>
+          <span>{statusText}</span>
+          <strong>{statusMessage}</strong>
         </section>
+
+        <KeywordCards
+          keywords={state?.keywords || []}
+          activeKeywordId={state?.active_keyword_id || ""}
+          selectedKeywordId={selectedKeywordId}
+          onSelect={(id) => {
+            setSelectedKeywordId(id);
+            setSelectedId("");
+          }}
+        />
 
         <TreeCanvas
           graph={graph}
@@ -260,6 +247,39 @@ function App() {
         />
       </section>
     </main>
+  );
+}
+
+function KeywordCards({ keywords, activeKeywordId, selectedKeywordId, onSelect }) {
+  if (!keywords.length) return null;
+
+  return (
+    <section className="keyword-strip">
+      {keywords.map((keyword, index) => {
+        const stats = keyword.result?.stats || keyword.stats || {};
+        const selected = selectedKeywordId === keyword.id;
+        const active = activeKeywordId === keyword.id;
+        return (
+          <button
+            key={keyword.id}
+            className={`keyword-card${selected ? " selected" : ""}`}
+            type="button"
+            onClick={() => onSelect(keyword.id)}
+          >
+            <span className="keyword-card-top">
+              <span>Keyword {index + 1}</span>
+              <strong className={`badge badge-${toneFromStatus(keyword.status || "idle")}`}>
+                {active ? "active" : keyword.status || "pending"}
+              </strong>
+            </span>
+            <strong className="keyword-query">{keyword.query}</strong>
+            <span className="keyword-stats">
+              {stats.roots || 0} roots / {stats.visited || 0} visited / {stats.suspicious || 0} suspicious
+            </span>
+          </button>
+        );
+      })}
+    </section>
   );
 }
 
