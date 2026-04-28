@@ -4,6 +4,11 @@
   "keywords": ["go", "react", "python", "crawler", "heroku"],
   "repository": "https://github.com/your-org/spcrawler",
   "website": "https://your-app.example.com",
+  "buildpacks": [
+    {
+      "url": "heroku/docker"
+    }
+  ],
   "env": {
     "ADDR": {
       "description": "Address the Go backend listens on.",
